@@ -244,7 +244,6 @@ async function scrapeAnimesOrion(query) {
 async function searchAllProviders(query) {
   log("search_all_start", { query });
 
-  // Executa os 4 scrapers simultaneamente
   const results = await Promise.allSettled([
     scrapeAnimesOnlineCC(query),
     scrapeAnimesDigital(query),
@@ -254,7 +253,6 @@ async function searchAllProviders(query) {
 
   const streams = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 
-  // Remove URLs duplicadas
   const unique = [];
   const seen = new Set();
 
