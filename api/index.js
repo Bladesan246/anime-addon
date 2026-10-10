@@ -219,7 +219,7 @@ async function scrapeGoyabu(title, episode) {
 
     if (!epUrl) epUrl = animeUrl;
 
-    const { data: epHtml } = await http.get(epHtml);
+    const { data: epHtml } = await http.get(epUrl);
     const $ep = cheerio.load(epHtml);
 
     $ep("iframe, video source").each((_, el) => {
@@ -300,7 +300,7 @@ async function searchAllProviders(titles, episode) {
 
 const manifest = {
   id: "br.meuanime.addon",
-  version: "1.3.7",
+  version: "1.3.8",
   name: "Animes BR",
   description: "Addon de animes em Português (PT-BR).",
   resources: ["stream"],
