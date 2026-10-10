@@ -136,9 +136,7 @@ async function getMetadata(parsed, type) {
   const metadataType = type === "movie" ? "movie" : "series";
 
   const response = await http.get(
-    `https://v3-cinemeta.strem.fun/meta/${metadataType}/${encodeURIComponent(
-      parsed.animeId
-    )}.json`
+   `https://v3-cinemeta.strem.io/meta/${metadataType}/${encodeURIComponent(parsed.animeId)}.json`
   );
 
   const meta = response.data?.meta;
