@@ -1,4 +1,3 @@
-
 const express = require("express");
 const axios = require("axios");
 const { addonBuilder } = require("stremio-addon-sdk");
@@ -7,11 +6,10 @@ const { searchAllProviders } = require("./providers");
 const app = express();
 
 const manifest = {
-  id: "br.meuanime.addon",
-  version: "1.4.0",
-  name: "Animes BR",
-  description:
-    "Addon de animes com integração para provedores autorizados.",
+  id: "br.meuanime.torrent",
+  version: "2.0.0",
+  name: "Animes BR Torrent",
+  description: "Addon de animes via torrent com prioridade para legendas e dublagens em português.",
   resources: ["stream"],
   types: ["anime", "series", "movie"],
   idPrefixes: ["tt", "kitsu"],
@@ -42,7 +40,6 @@ function parseId(id) {
 
   const parts = id.split(":");
 
-  // IDs Kitsu
   if (parts[0].toLowerCase() === "kitsu") {
     if (!/^\d+$/.test(parts[1] || "")) {
       return { error: "ID Kitsu inválido" };
@@ -81,7 +78,6 @@ function parseId(id) {
     return { error: "Formato Kitsu não reconhecido" };
   }
 
-  // IDs IMDb
   if (/^tt\d+$/i.test(parts[0])) {
     if (parts.length === 1) {
       return {
@@ -120,9 +116,7 @@ function parseId(id) {
 async function getMetadata(parsed, type) {
   if (parsed.source === "kitsu") {
     const response = await http.get(
-      `https://kitsu.io/api/edge/anime/${encodeURIComponent(
-        parsed.animeId
-      )}`
+      `https://kitsu.io/api/edge/anime/${encodeURIComponent(parsed.animeId)}`
     );
 
     const attributes = response.data?.data?.attributes;
@@ -158,7 +152,6 @@ async function getMetadata(parsed, type) {
 
 const builder = new addonBuilder(manifest);
 
-// Registre o handler ANTES de chamar getInterface().
 builder.defineStreamHandler(async ({ type, id }) => {
   log("stream_request", { type, id });
 
@@ -169,11 +162,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
   const parsed = parseId(id);
 
   if (parsed.error) {
-    log("invalid_id", {
-      id,
-      reason: parsed.error
-    });
-
+    log("invalid_id", { id, reason: parsed.error });
     return { streams: [] };
   }
 
@@ -192,7 +181,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
       message: error.message,
       status: error.response?.status || null
     });
-
     return { streams: [] };
   }
 
@@ -216,12 +204,10 @@ builder.defineStreamHandler(async ({ type, id }) => {
       id,
       message: error.message
     });
-
     return { streams: [] };
   }
 });
 
-// Obtenha a interface somente depois de registrar os handlers.
 const addonInterface = builder.getInterface();
 
 app.use((req, res, next) => {
@@ -244,9 +230,6 @@ app.get("/health", (req, res) => {
   res.json({
     ok: true,
     version: manifest.version,
-    providerConfigured: Boolean(
-      process.env.AUTHORIZED_PROVIDER_API_URL
-    ),
     timestamp: new Date().toISOString()
   });
 });
@@ -273,9 +256,7 @@ app.get("/stream/:type/:id.json", async (req, res) => {
       id: req.params.id
     });
 
-    res.status(500).json({
-      streams: []
-    });
+    res.status(500).json({ streams: [] });
   }
 });
 
@@ -294,14 +275,11 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Execução local
 if (require.main === module) {
   const port = process.env.PORT || 3000;
-
   app.listen(port, () => {
     log("server_started", { port });
   });
 }
 
-// Exportação para a Vercel
 module.exports = app;

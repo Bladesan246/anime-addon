@@ -2,11 +2,11 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 
 const http = axios.create({
-  timeout: 5000,
+  timeout: 12000,
   headers: {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8"
   }
 });
 
@@ -30,229 +30,80 @@ function cleanTitle(str) {
     .trim();
 }
 
-function extractUrl($elem) {
-  const attrs = ["src", "data-src", "data-lazy-src", "value"];
-  for (const attr of attrs) {
-    const val = $elem.attr(attr);
-    if (val && (val.includes("http") || val.includes("//"))) {
-      return val.startsWith("//") ? "https:" + val : val;
-    }
+function scoreResult(name, query) {
+  const n = name.toLowerCase();
+  let score = 0;
+
+  // Prioridade máxima para português
+  if (n.includes("pt-br") || n.includes("ptbr") || n.includes("portuguese")) score += 100;
+  if (n.includes("legendado") || n.includes("legenda")) score += 80;
+  if (n.includes("dublado") || n.includes("dual") || n.includes("multi-audio") || n.includes("multi audio")) score += 70;
+  if (n.includes("brazilian") || n.includes("brasil")) score += 60;
+
+  // Qualidade
+  if (n.includes("1080p") || n.includes("1080")) score += 30;
+  if (n.includes("720p") || n.includes("720")) score += 15;
+  if (n.includes("2160p") || n.includes("4k")) score += 25;
+  if (n.includes("bluray") || n.includes("bdrip") || n.includes("bd ")) score += 20;
+  if (n.includes("web-dl") || n.includes("webdl") || n.includes("webrip")) score += 10;
+
+  // Episódio
+  const ep = String(query.episode).padStart(2, "0");
+  if (
+    n.includes(` - ${query.episode}`) ||
+    n.includes(` - ${ep}`) ||
+    n.includes(`e${ep}`) ||
+    n.includes(`ep${ep}`) ||
+    n.includes(`episode ${query.episode}`) ||
+    n.includes(`episodio ${query.episode}`)
+  ) {
+    score += 40;
   }
-  return null;
+
+  // Penaliza batches grandes demais se estamos buscando episódio específico
+  if (n.includes("batch") || n.includes("complete") || n.includes("completo")) {
+    score -= 15;
+  }
+
+  return score;
 }
 
-// 1. AnimesOnlineCC
-async function scrapeAnimesOnlineCC(query) {
+async function searchNyaa(query, extraTerms = "") {
   const streams = [];
   try {
     const title = cleanTitle(query.title);
-    const searchUrl = `https://animesonlinecc.to/?s=${encodeURIComponent(title)}`;
-    const { data } = await http.get(searchUrl);
+    const searchQuery = `${title} ${extraTerms}`.trim();
+    const url = `https://nyaa.si/?f=0&c=1_0&q=${encodeURIComponent(searchQuery)}&s=seeders&o=desc`;
+
+    const { data } = await http.get(url);
     const $ = cheerio.load(data);
 
-    let animeUrl = "";
-    $(".result-item article .details .title a, article a").each((_, el) => {
-      const href = $(el).attr("href");
-      if (href && href.includes("animesonline") && !animeUrl) animeUrl = href;
-    });
+    $("table.torrent-list tbody tr").each((_, el) => {
+      const $el = $(el);
+      const nameLink = $el.find("td:nth-child(2) a:not(.comments)").first();
+      const name = nameLink.text().trim();
+      const magnet = $el.find('a[href^="magnet:"]').attr("href");
+      const size = $el.find("td:nth-child(4)").text().trim();
+      const seeders = parseInt($el.find("td:nth-child(6)").text().trim()) || 0;
 
-    if (!animeUrl) return [];
+      if (!name || !magnet || seeders < 1) return;
 
-    const { data: animeHtml } = await http.get(animeUrl);
-    const $anime = cheerio.load(animeHtml);
+      const score = scoreResult(name, query);
 
-    let epUrl = "";
-    $anime("#episodios li, .episodios li").each((_, el) => {
-      const text = $anime(el).text().trim().toLowerCase();
-      const link = $anime(el).find("a").attr("href");
-      if (
-        text.includes(`episodio ${query.episode}`) ||
-        text.includes(`ep ${query.episode}`) ||
-        text.endsWith(` ${query.episode}`)
-      ) {
-        if (link) epUrl = link;
-      }
-    });
-
-    if (!epUrl) epUrl = `${animeUrl.replace(/\/$/, "")}-episodio-${query.episode}/`;
-
-    const { data: epHtml } = await http.get(epUrl);
-    const $ep = cheerio.load(epHtml);
-
-    $ep("iframe, video source, option").each((_, el) => {
-      const src = extractUrl($ep(el));
-      if (src && !src.includes("facebook") && !src.includes("disqus")) {
-        streams.push({
-          name: "AnimesOnlineCC",
-          title: `AnimesOnlineCC — Ep ${query.episode}`,
-          url: src
-        });
-      }
+      streams.push({
+        name: name.length > 90 ? name.slice(0, 87) + "..." : name,
+        title: `${name} | ${size} | 🌱 ${seeders}`,
+        infoHash: magnet.match(/btih:([a-fA-F0-9]{40})/)?.[1] || null,
+        url: magnet,
+        behaviorHints: {
+          bingeGroup: `nyaa-${query.title}`
+        },
+        _score: score,
+        _seeders: seeders
+      });
     });
   } catch (e) {
-    log("provider_error", { provider: "AnimesOnlineCC", error: e.message });
-  }
-  return streams;
-}
-
-// 2. AnimesDigital
-async function scrapeAnimesDigital(query) {
-  const streams = [];
-  try {
-    const title = cleanTitle(query.title);
-    const searchUrl = `https://animesdigital.org/?s=${encodeURIComponent(title)}`;
-    const { data } = await http.get(searchUrl);
-    const $ = cheerio.load(data);
-
-    let animeUrl = "";
-    $(".item article .data .title a, .items article a").each((_, el) => {
-      const href = $(el).attr("href");
-      if (href && !animeUrl) animeUrl = href;
-    });
-
-    if (!animeUrl) return [];
-
-    const { data: animeHtml } = await http.get(animeUrl);
-    const $anime = cheerio.load(animeHtml);
-
-    let epUrl = "";
-    $anime(".episodios li, #episodios li").each((_, el) => {
-      const text = $anime(el).text().toLowerCase();
-      const link = $anime(el).find("a").attr("href");
-      if (
-        text.includes(`episodio ${query.episode}`) ||
-        text.includes(`ep ${query.episode}`)
-      ) {
-        if (link) epUrl = link;
-      }
-    });
-
-    if (!epUrl) epUrl = animeUrl;
-
-    const { data: epHtml } = await http.get(epUrl);
-    const $ep = cheerio.load(epHtml);
-
-    $ep("iframe, video source, option").each((_, el) => {
-      const src = extractUrl($ep(el));
-      if (src && !src.includes("disqus")) {
-        streams.push({
-          name: "AnimesDigital",
-          title: `AnimesDigital — Ep ${query.episode}`,
-          url: src
-        });
-      }
-    });
-  } catch (e) {
-    log("provider_error", { provider: "AnimesDigital", error: e.message });
-  }
-  return streams;
-}
-
-// 3. Goyabu
-async function scrapeGoyabu(query) {
-  const streams = [];
-  try {
-    const title = cleanTitle(query.title);
-    const searchUrl = `https://goyabu.org/?s=${encodeURIComponent(title)}`;
-    const { data } = await http.get(searchUrl);
-    const $ = cheerio.load(data);
-
-    let animeUrl = "";
-    $(".post-title a, article a").each((_, el) => {
-      const href = $(el).attr("href");
-      if (href && !animeUrl) animeUrl = href;
-    });
-
-    if (!animeUrl) return [];
-
-    const { data: animeHtml } = await http.get(animeUrl);
-    const $anime = cheerio.load(animeHtml);
-
-    let epUrl = "";
-    $anime(".eps-single a, .episode-list a").each((_, el) => {
-      const text = $anime(el).text().toLowerCase();
-      const link = $anime(el).attr("href");
-      if (
-        text.includes(`episodio ${query.episode}`) ||
-        text.includes(`ep ${query.episode}`) ||
-        text.endsWith(`${query.episode}`)
-      ) {
-        if (link) epUrl = link;
-      }
-    });
-
-    if (!epUrl) epUrl = animeUrl;
-
-    const { data: epHtml } = await http.get(epUrl);
-    const $ep = cheerio.load(epHtml);
-
-    $ep("iframe, video source").each((_, el) => {
-      const src = extractUrl($ep(el));
-      if (src) {
-        streams.push({
-          name: "Goyabu",
-          title: `Goyabu — Ep ${query.episode}`,
-          url: src
-        });
-      }
-    });
-  } catch (e) {
-    log("provider_error", { provider: "Goyabu", error: e.message });
-  }
-  return streams;
-}
-
-// 4. AnimesOrion
-async function scrapeAnimesOrion(query) {
-  const streams = [];
-  try {
-    const title = cleanTitle(query.title);
-    const searchUrl = `https://animesorion.vip/?s=${encodeURIComponent(title)}`;
-    const { data } = await http.get(searchUrl);
-    const $ = cheerio.load(data);
-
-    let animeUrl = "";
-    $(".post-title a, article a, .video-item a").each((_, el) => {
-      const href = $(el).attr("href");
-      if (href && !animeUrl) animeUrl = href;
-    });
-
-    if (!animeUrl) return [];
-
-    const { data: animeHtml } = await http.get(animeUrl);
-    const $anime = cheerio.load(animeHtml);
-
-    let epUrl = "";
-    $anime(".episodios li, .single-eps a").each((_, el) => {
-      const text = $anime(el).text().toLowerCase();
-      // CORRIGIDO: || em vez de \vert{}\vert{}
-      const link =
-        $anime(el).find("a").attr("href") || $anime(el).attr("href");
-      if (
-        text.includes(`episodio ${query.episode}`) ||
-        text.includes(`ep ${query.episode}`)
-      ) {
-        if (link) epUrl = link;
-      }
-    });
-
-    if (!epUrl) epUrl = animeUrl;
-
-    const { data: epHtml } = await http.get(epUrl);
-    const $ep = cheerio.load(epHtml);
-
-    $ep("iframe, video source").each((_, el) => {
-      const src = extractUrl($ep(el));
-      if (src) {
-        streams.push({
-          name: "AnimesOrion",
-          title: `AnimesOrion — Ep ${query.episode}`,
-          url: src
-        });
-      }
-    });
-  } catch (e) {
-    log("provider_error", { provider: "AnimesOrion", error: e.message });
+    log("nyaa_error", { error: e.message, extra: extraTerms });
   }
   return streams;
 }
@@ -260,29 +111,39 @@ async function scrapeAnimesOrion(query) {
 async function searchAllProviders(query) {
   log("search_all_start", { query });
 
-  const results = await Promise.allSettled([
-    scrapeAnimesOnlineCC(query),
-    scrapeAnimesDigital(query),
-    scrapeGoyabu(query),
-    scrapeAnimesOrion(query)
+  // Buscas em paralelo: normal + priorizando português
+  const [normal, ptbr, legendado, dublado] = await Promise.all([
+    searchNyaa(query),
+    searchNyaa(query, "PT-BR"),
+    searchNyaa(query, "Legendado"),
+    searchNyaa(query, "Dublado")
   ]);
 
-  const streams = results.flatMap((r) =>
-    r.status === "fulfilled" ? r.value : []
-  );
+  const all = [...normal, ...ptbr, ...legendado, ...dublado];
 
-  const unique = [];
+  // Remove duplicados pelo infoHash
   const seen = new Set();
+  const unique = [];
 
-  for (const item of streams) {
-    if (item.url && !seen.has(item.url)) {
-      seen.add(item.url);
+  for (const item of all) {
+    const key = item.infoHash || item.url;
+    if (key && !seen.has(key)) {
+      seen.add(key);
       unique.push(item);
     }
   }
 
-  log("search_all_complete", { streamsFound: unique.length });
-  return unique;
+  // Ordena por score (português primeiro) e depois por seeders
+  unique.sort((a, b) => {
+    if (b._score !== a._score) return b._score - a._score;
+    return b._seeders - a._seeders;
+  });
+
+  // Limita a 25 resultados para não poluir o Stremio
+  const final = unique.slice(0, 25).map(({ _score, _seeders, ...rest }) => rest);
+
+  log("search_all_complete", { streamsFound: final.length });
+  return final;
 }
 
 module.exports = {
