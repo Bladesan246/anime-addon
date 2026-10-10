@@ -1,12 +1,13 @@
 const express = require("express");
 const axios = require("axios");
+const cheerio = require("cheerio");
 const { addonBuilder } = require("stremio-addon-sdk");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const http = axios.create({
-  timeout: 5000,
+  timeout: 4500,
   headers: {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -49,12 +50,18 @@ function parseId(id) {
   return { source: "unknown", animeId: parts[0], season: 1, episode: 1 };
 }
 
-async function getMetadata(parsed, type) {
+async function getMetadataTitles(parsed, type) {
+  const titles = new Set();
+
   if (parsed.source === "kitsu") {
     try {
       const res = await http.get(`https://kitsu.io/api/edge/anime/${encodeURIComponent(parsed.animeId)}`);
       const attr = res.data?.data?.attributes;
-      if (attr) return { title: attr.canonicalTitle || attr.titles?.en || attr.titles?.en_jp };
+      if (attr) {
+        if (attr.canonicalTitle) titles.add(attr.canonicalTitle);
+        if (attr.titles?.en_jp) titles.add(attr.titles.en_jp);
+        if (attr.titles?.en) titles.add(attr.titles.en);
+      }
     } catch (e) {}
   }
 
@@ -62,123 +69,220 @@ async function getMetadata(parsed, type) {
   try {
     const res = await http.get(`https://v3-cinemeta.strem.fun/meta/${metaType}/${encodeURIComponent(parsed.animeId)}.json`);
     const meta = res.data?.meta;
-    if (meta?.name) return { title: meta.name };
+    if (meta?.name) titles.add(meta.name);
   } catch (e) {}
 
-  return { title: null };
+  try {
+    const kitsuRes = await http.get(`https://kitsu.io/api/edge/anime?filter[text]=${encodeURIComponent(parsed.animeId)}`);
+    const attr = kitsuRes.data?.data?.[0]?.attributes;
+    if (attr) {
+      if (attr.canonicalTitle) titles.add(attr.canonicalTitle);
+      if (attr.titles?.en_jp) titles.add(attr.titles.en_jp);
+    }
+  } catch (e) {}
+
+  const finalQueries = new Set();
+  titles.forEach((t) => {
+    if (t) {
+      finalQueries.add(t);
+      finalQueries.add(sanitizeTitle(t));
+    }
+  });
+
+  return Array.from(finalQueries);
 }
 
-// Scraper 1: AnimesOnlineCC
+function extractStreamUrl($elem) {
+  const attrs = ["src", "data-src", "data-lazy-src", "value"];
+  for (const attr of attrs) {
+    const val = $elem.attr(attr);
+    if (val && (val.includes("http") || val.includes("//"))) {
+      return val.startsWith("//") ? "https:" + val : val;
+    }
+  }
+  return null;
+}
+
+// 1. AnimesOnlineCC
 async function scrapeAnimesOnlineCC(title, episode) {
   const streams = [];
   try {
     const clean = sanitizeTitle(title);
     const searchRes = await http.get(`https://animesonlinecc.to/?s=${encodeURIComponent(clean)}`);
-    const html = searchRes.data || "";
+    const $search = cheerio.load(searchRes.data || "");
 
-    const linkMatch = html.match(/href="(https?:\/\/animesonlinecc\.to\/anime\/[^"]+)"/i);
-    const animeUrl = linkMatch ? linkMatch[1] : null;
+    let animeUrl = "";
+    $search(".result-item article .details .title a, article a").each((_, el) => {
+      const href = $search(el).attr("href");
+      if (href && href.includes("animesonline") && !animeUrl) animeUrl = href;
+    });
+
     if (!animeUrl) return [];
 
-    const epUrl = `${animeUrl.replace(/\/$/, "")}-episodio-${episode}/`;
-    const epRes = await http.get(epUrl);
-    const epHtml = epRes.data || "";
+    const { data: animeHtml } = await http.get(animeUrl);
+    const $anime = cheerio.load(animeHtml);
 
-    const iframeMatches = epHtml.matchAll(/src="(https?:\/\/[^"]+)"/gi);
-    for (const match of iframeMatches) {
-      const src = match[1];
-      if (src && !src.includes("facebook") && !src.includes("disqus")) {
+    let epUrl = "";
+    $anime("#episodios li, .episodios li").each((_, el) => {
+      const text = $anime(el).text().trim().toLowerCase();
+      const link = $anime(el).find("a").attr("href");
+      if (text.includes(`episodio ${episode}`) || text.includes(`ep ${episode}`) || text.endsWith(` ${episode}`)) {
+        if (link) epUrl = link;
+      }
+    });
+
+    if (!epUrl) epUrl = `${animeUrl.replace(/\/$/, "")}-episodio-${episode}/`;
+
+    const { data: epHtml } = await http.get(epUrl);
+    const $ep = cheerio.load(epHtml);
+
+    $ep("iframe, video source, option, embed").each((_, el) => {
+      const src = extractStreamUrl($ep(el));
+      if (src && !src.includes("facebook") && !src.includes("disqus") && !src.includes("twitter")) {
         streams.push({ name: "Animes BR", title: `🌐 AnimesOnlineCC — Ep ${episode}`, url: src });
       }
-    }
+    });
   } catch (e) {}
   return streams;
 }
 
-// Scraper 2: AnimesDigital
+// 2. AnimesDigital
 async function scrapeAnimesDigital(title, episode) {
   const streams = [];
   try {
     const clean = sanitizeTitle(title);
     const searchRes = await http.get(`https://animesdigital.org/?s=${encodeURIComponent(clean)}`);
-    const html = searchRes.data || "";
+    const $search = cheerio.load(searchRes.data || "");
 
-    const linkMatch = html.match(/href="(https?:\/\/animesdigital\.org\/anime\/[^"]+)"/i);
-    const animeUrl = linkMatch ? linkMatch[1] : null;
+    let animeUrl = "";
+    $search(".item article .data .title a, .items article a").each((_, el) => {
+      const href = $search(el).attr("href");
+      if (href && !animeUrl) animeUrl = href;
+    });
+
     if (!animeUrl) return [];
 
-    const epUrl = `${animeUrl.replace(/\/$/, "")}-episodio-${episode}/`;
-    const epRes = await http.get(epUrl);
-    const epHtml = epRes.data || "";
+    const { data: animeHtml } = await http.get(animeUrl);
+    const $anime = cheerio.load(animeHtml);
 
-    const iframeMatches = epHtml.matchAll(/src="(https?:\/\/[^"]+)"/gi);
-    for (const match of iframeMatches) {
-      const src = match[1];
+    let epUrl = "";
+    $anime(".episodios li, #episodios li").each((_, el) => {
+      const text = $anime(el).text().toLowerCase();
+      const link = $anime(el).find("a").attr("href");
+      if (text.includes(`episodio ${episode}`) || text.includes(`ep ${episode}`)) {
+        if (link) epUrl = link;
+      }
+    });
+
+    if (!epUrl) epUrl = animeUrl;
+
+    const { data: epHtml } = await http.get(epUrl);
+    const $ep = cheerio.load(epHtml);
+
+    $ep("iframe, video source, option").each((_, el) => {
+      const src = extractStreamUrl($ep(el));
       if (src && !src.includes("disqus")) {
         streams.push({ name: "Animes BR", title: `🌐 AnimesDigital — Ep ${episode}`, url: src });
       }
-    }
+    });
   } catch (e) {}
   return streams;
 }
 
-// Scraper 3: Goyabu
+// 3. Goyabu
 async function scrapeGoyabu(title, episode) {
   const streams = [];
   try {
     const clean = sanitizeTitle(title);
     const searchRes = await http.get(`https://goyabu.org/?s=${encodeURIComponent(clean)}`);
-    const html = searchRes.data || "";
+    const $search = cheerio.load(searchRes.data || "");
 
-    const linkMatch = html.match(/href="(https?:\/\/goyabu\.org\/[^"]+)"/i);
-    const animeUrl = linkMatch ? linkMatch[1] : null;
+    let animeUrl = "";
+    $search(".post-title a, article a").each((_, el) => {
+      const href = $search(el).attr("href");
+      if (href && !animeUrl) animeUrl = href;
+    });
+
     if (!animeUrl) return [];
 
-    const epRes = await http.get(animeUrl);
-    const epHtml = epRes.data || "";
+    const { data: animeHtml } = await http.get(animeUrl);
+    const $anime = cheerio.load(animeHtml);
 
-    const iframeMatches = epHtml.matchAll(/src="(https?:\/\/[^"]+)"/gi);
-    for (const match of iframeMatches) {
-      const src = match[1];
+    let epUrl = "";
+    $anime(".eps-single a, .episode-list a").each((_, el) => {
+      const text = $anime(el).text().toLowerCase();
+      const link = $anime(el).attr("href");
+      if (text.includes(`episodio ${episode}`) || text.includes(`ep ${episode}`) || text.endsWith(`${episode}`)) {
+        if (link) epUrl = link;
+      }
+    });
+
+    if (!epUrl) epUrl = animeUrl;
+
+    const { data: epHtml } = await http.get(epUrl);
+    const $ep = cheerio.load(epHtml);
+
+    $ep("iframe, video source").each((_, el) => {
+      const src = extractStreamUrl($ep(el));
       if (src) streams.push({ name: "Animes BR", title: `🌐 Goyabu — Ep ${episode}`, url: src });
-    }
+    });
   } catch (e) {}
   return streams;
 }
 
-// Scraper 4: AnimesOrion
+// 4. AnimesOrion
 async function scrapeAnimesOrion(title, episode) {
   const streams = [];
   try {
     const clean = sanitizeTitle(title);
     const searchRes = await http.get(`https://animesorion.vip/?s=${encodeURIComponent(clean)}`);
-    const html = searchRes.data || "";
+    const $search = cheerio.load(searchRes.data || "");
 
-    const linkMatch = html.match(/href="(https?:\/\/animesorion\.vip\/[^"]+)"/i);
-    const animeUrl = linkMatch ? linkMatch[1] : null;
+    let animeUrl = "";
+    $search(".post-title a, article a, .video-item a").each((_, el) => {
+      const href = $search(el).attr("href");
+      if (href && !animeUrl) animeUrl = href;
+    });
+
     if (!animeUrl) return [];
 
-    const epRes = await http.get(animeUrl);
-    const epHtml = epRes.data || "";
+    const { data: animeHtml } = await http.get(animeUrl);
+    const $anime = cheerio.load(animeHtml);
 
-    const iframeMatches = epHtml.matchAll(/src="(https?:\/\/[^"]+)"/gi);
-    for (const match of iframeMatches) {
-      const src = match[1];
+    let epUrl = "";
+    $anime(".episodios li, .single-eps a").each((_, el) => {
+      const text = $anime(el).text().toLowerCase();
+      const link = $anime(el).find("a").attr("href") \vert{}\vert{} $anime(el).attr("href");
+      if (text.includes(`episodio ${episode}`) || text.includes(`ep ${episode}`)) {
+        if (link) epUrl = link;
+      }
+    });
+
+    if (!epUrl) epUrl = animeUrl;
+
+    const { data: epHtml } = await http.get(epHtml);
+    const $ep = cheerio.load(epHtml);
+
+    $ep("iframe, video source").each((_, el) => {
+      const src = extractStreamUrl($ep(el));
       if (src) streams.push({ name: "Animes BR", title: `🌐 AnimesOrion — Ep ${episode}`, url: src });
-    }
+    });
   } catch (e) {}
   return streams;
 }
 
-async function searchAllProviders(query) {
-  if (!query.title) return [];
+async function searchAllProviders(titles, episode) {
+  if (!titles || titles.length === 0) return [];
 
-  const results = await Promise.allSettled([
-    scrapeAnimesOnlineCC(query.title, query.episode),
-    scrapeAnimesDigital(query.title, query.episode),
-    scrapeGoyabu(query.title, query.episode),
-    scrapeAnimesOrion(query.title, query.episode)
-  ]);
+  const tasks = [];
+  for (const title of titles.slice(0, 2)) {
+    tasks.push(scrapeAnimesOnlineCC(title, episode));
+    tasks.push(scrapeAnimesDigital(title, episode));
+    tasks.push(scrapeGoyabu(title, episode));
+    tasks.push(scrapeAnimesOrion(title, episode));
+  }
+
+  const results = await Promise.allSettled(tasks);
 
   const streams = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
   const unique = [];
@@ -196,7 +300,7 @@ async function searchAllProviders(query) {
 
 const manifest = {
   id: "br.meuanime.addon",
-  version: "1.3.3",
+  version: "1.3.5",
   name: "Animes BR",
   description: "Addon de animes em Português (PT-BR).",
   resources: ["stream"],
@@ -209,18 +313,13 @@ const builder = new addonBuilder(manifest);
 
 builder.defineStreamHandler(async ({ type, id }) => {
   const parsed = parseId(id);
-  const metadata = await getMetadata(parsed, type);
+  const titles = await getMetadataTitles(parsed, type);
 
   let streams = [];
-  if (metadata.title) {
-    streams = await searchAllProviders({
-      title: metadata.title,
-      season: parsed.season,
-      episode: parsed.episode
-    });
+  if (titles.length > 0) {
+    streams = await searchAllProviders(titles, parsed.episode);
   }
 
-  // Se nada for encontrado, retorna mensagem legível no Stremio
   if (!streams || streams.length === 0) {
     streams = [
       {
