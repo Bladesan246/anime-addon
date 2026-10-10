@@ -10,7 +10,7 @@ const client = axios.create({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
   },
-  timeout: 5000
+  timeout: 6000
 });
 
 const FALLBACK_MAP = {
@@ -63,45 +63,51 @@ async function scrapeAnimesOnline(title, episode) {
     const { data: searchHtml } = await client.get(searchUrl);
     const $search = cheerio.load(searchHtml);
 
-    let animeUrl = "";
+    let animeUrls = [];
     $search(".result-item article .details .title a").each((_, el) => {
       const foundTitle = $search(el).text().trim().toLowerCase();
-      if (foundTitle.includes(title.toLowerCase())) {
-        animeUrl = $search(el).attr("href");
-        return false;
+      const cleanTitle = title.toLowerCase();
+      
+      if (foundTitle.includes(cleanTitle) || cleanTitle.includes(foundTitle)) {
+        const href = $search(el).attr("href");
+        if (href) animeUrls.push(href);
       }
     });
 
-    if (!animeUrl) return streams;
+    if (animeUrls.length === 0) {
+      const firstHref = $search(".result-item article .details .title a").first().attr("href");
+      if (firstHref) animeUrls.push(firstHref);
+    }
 
-    const { data: animeHtml } = await client.get(animeUrl);
-    const $anime = cheerio.load(animeHtml);
+    for (const animeUrl of animeUrls.slice(0, 2)) {
+      const { data: animeHtml } = await client.get(animeUrl);
+      const $anime = cheerio.load(animeHtml);
 
-    let epUrl = "";
-    $anime("#episodios li, .episodios li").each((_, el) => {
-      const epText = $anime(el).text().trim();
-      if (epText.includes(`Episódio ${episode}`) || epText.endsWith(` ${episode}`)) {
-        epUrl = $anime(el).find("a").attr("href");
-      }
-    });
+      let epUrl = "";
+      $anime("#episodios li, .episodios li, ul.episodios li").each((_, el) => {
+        const epText = $anime(el).text().trim().toLowerCase();
+        const link = $anime(el).find("a").attr("href");
 
-    if (epUrl) {
-      const { data: epHtml } = await client.get(epUrl);
-      const $ep = cheerio.load(epHtml);
-
-      $ep("iframe").each((_, el) => {
-        let src = $ep(el).attr("src");
-        if (!src) {
-          src = $ep(el).attr("data-src");
-        }
-
-        if (src) {
-          streams.push({
-            title: `🌐 AnimesOnline - ${title} (Ep ${episode})`,
-            url: src
-          });
+        if (epText.includes(`episódio ${episode}`) || epText.includes(`ep ${episode}`) || epText.endsWith(` ${episode}`)) {
+          epUrl = link;
         }
       });
+
+      if (epUrl) {
+        const { data: epHtml } = await client.get(epUrl);
+        const $ep = cheerio.load(epHtml);
+
+        $ep("iframe, video source, embed").each((_, el) => {
+          let src = $ep(el).attr("src") || $ep(el).attr("data-src") \vert{}\vert{} $ep(el).attr("data-lazy-src");
+          if (src && !src.includes("facebook") && !src.includes("disqus")) {
+            if (src.startsWith("//")) src = "https:" + src;
+            streams.push({
+              title: `🌐 AnimesOnline - ${title} (Ep ${episode})`,
+              url: src
+            });
+          }
+        });
+      }
     }
   } catch (err) {}
   return streams;
