@@ -1,0 +1,193 @@
+const axios = require('axios');
+const cheerio = require('cheerio');
+
+const client = axios.create({
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
+  },
+  timeout: 7000
+});
+
+/**
+ * Obtém dinamicamente o título de QUALQUER anime via Kitsu ou Cinemeta
+ */
+async function getAnimeTitle(id) {
+  const parts = id.split(':');
+  const mainId = parts[0];
+
+  // 1. Se for ID do Kitsu (kitsu:XXXX)
+  if (id.startsWith('kitsu')) {
+    try {
+      const kitsuId = parts[1];
+      const res = await client.get(`https://kitsu.io/api/edge/anime/${kitsuId}`);
+      const attr = res.data && res.data.data && res.data.data.attributes;
+      if (attr) {
+        return attr.canonicalTitle || attr.titles.en || attr.titles.en_jp;
+      }
+    } catch (e) {}
+  }
+
+  // 2. Se for ID do IMDb (ttXXXXXXX)
+  if (mainId.startsWith('tt')) {
+    try {
+      const res = await client.get(`https://v3-cinemeta.strem.fun/meta/series/${mainId}.json`);
+      if (res.data && res.data.meta && res.data.meta.name) {
+        return res.data.meta.name;
+      }
+    } catch (e) {
+      try {
+        const kitsuRes = await client.get(`https://kitsu.io/api/edge/anime?filter[text]=${mainId}`);
+        const attr = kitsuRes.data && kitsuRes.data.data && kitsuRes.data.data[0] && kitsuRes.data.data[0].attributes;
+        if (attr) {
+          return attr.canonicalTitle || attr.titles.en;
+        }
+      } catch (err) {}
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Scraper: AnimesOnline (animesonlinecc.to)
+ */
+async function scrapeAnimesOnline(title, episode) {
+  const streams = [];
+  try {
+    const searchUrl = `https://animesonlinecc.to/?s=${encodeURIComponent(title)}`;
+    const { data: searchHtml } = await client.get(searchUrl);
+    const $search = cheerio.load(searchHtml);
+
+    let animeUrl = '';
+    $search('.result-item article .details .title a').each((_, el) => {
+      const foundTitle = $search(el).text().trim().toLowerCase();
+      const targetTitle = title.toLowerCase();
+
+      if (foundTitle.includes(targetTitle) || targetTitle.includes(foundTitle)) {
+        animeUrl = $search(el).attr('href');
+        return false;
+      }
+    });
+
+    if (!animeUrl) return streams;
+
+    const { data: animeHtml } = await client.get(animeUrl);
+    const $anime = cheerio.load(animeHtml);
+
+    let epUrl = '';
+    $anime('#episodios li, .episodios li').each((_, el) => {
+      const epText = $anime(el).text().trim();
+      const link = $anime(el).find('a').attr('href');
+
+      if (epText.includes(`Episódio ${episode}`) || epText.endsWith(` ${episode}`)) {
+        epUrl = link;
+      }
+    });
+
+    if (epUrl) {
+      const { data: epHtml } = await client.get(epUrl);
+      const $ep = cheerio.load(epHtml);
+
+      $ep('iframe').each((_, el) => {
+        let src = $ep(el).attr('src');
+        if (!src) {
+          src = $ep(el).attr('data-src');
+        }
+
+        if (src) {
+          streams.push({
+            title: `🌐 AnimesOnline - ${title} (Ep ${episode})`,
+            url: src
+          });
+        }
+      });
+    }
+  } catch (err) {
+    console.log(`[AnimesOnline] Sem resultados para "${title}"`);
+  }
+  return streams;
+}
+
+/**
+ * Scraper: Animes Digital (animesdigital.org)
+ */
+async function scrapeAnimesDigital(title, episode) {
+  const streams = [];
+  try {
+    const searchUrl = `https://animesdigital.org/?s=${encodeURIComponent(title)}`;
+    const { data: searchHtml } = await client.get(searchUrl);
+    const $search = cheerio.load(searchHtml);
+
+    const animeUrl = $search('.items .item a').first().attr('href');
+    if (!animeUrl) return streams;
+
+    const { data: animeHtml } = await client.get(animeUrl);
+    const $anime = cheerio.load(animeHtml);
+
+    let epUrl = '';
+    $anime('.episodios li a').each((_, el) => {
+      let epNum = $anime(el).find('.episodio').text();
+      if (!epNum) {
+        epNum = $anime(el).text();
+      }
+
+      if (epNum.trim() === String(episode)) {
+        epUrl = $anime(el).attr('href');
+      }
+    });
+
+    if (epUrl) {
+      const { data: epHtml } = await client.get(epUrl);
+      const $ep = cheerio.load(epHtml);
+
+      $ep('iframe, video source').each((_, el) => {
+        const videoSrc = $ep(el).attr('src');
+        if (videoSrc) {
+          streams.push({
+            title: `🌐 AnimesDigital - ${title} (Ep ${episode})`,
+            url: videoSrc
+          });
+        }
+      });
+    }
+  } catch (err) {
+    console.log(`[AnimesDigital] Sem resultados para "${title}"`);
+  }
+  return streams;
+}
+
+/**
+ * Gerenciador de Scrapers
+ */
+async function fetchAnimeStreams(id) {
+  let allStreams = [];
+
+  const parts = id.split(':');
+  const episode = parts.length > 2 ? parts[2] : (parts[1] || "1");
+
+  const title = await getAnimeTitle(id);
+  if (!title) {
+    console.log(`[Erro] Não foi possível obter metadados para o ID: ${id}`);
+    return [];
+  }
+
+  console.log(`\n==================================================`);
+  console.log(`[BUSCA DINÂMICA] Anime: "${title}" | Episódio: ${episode}`);
+  console.log(`==================================================`);
+
+  const results = await Promise.allSettled([
+    scrapeAnimesOnline(title, episode),
+    scrapeAnimesDigital(title, episode)
+  ]);
+
+  results.forEach(res => {
+    if (res.status === 'fulfilled' && Array.isArray(res.value)) {
+      allStreams = allStreams.concat(res.value);
+    }
+  });
+
+  return allStreams;
+}
+
+module.exports = { fetchAnimeStreams };
