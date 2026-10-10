@@ -2,17 +2,16 @@
 const express = require("express");
 const axios = require("axios");
 const { addonBuilder } = require("stremio-addon-sdk");
-const { PROVIDERS, searchAllProviders } = require("./api/providers");
+const { searchAllProviders } = require("./providers");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const manifest = {
   id: "br.meuanime.addon",
-  version: "1.2.0",
+  version: "1.3.0",
   name: "Animes BR",
-  description:
-    "Addon de animes com pesquisa em provedores configurados.",
+  description: "Addon de animes com fontes autorizadas configuráveis.",
   resources: ["stream"],
   types: ["anime", "series", "movie"],
   idPrefixes: ["tt", "kitsu"],
@@ -21,9 +20,13 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
+const addonInterface = builder.getInterface();
+
 const http = axios.create({
   timeout: 10000,
-  headers: { Accept: "application/json" }
+  headers: {
+    Accept: "application/json"
+  }
 });
 
 function log(stage, details = {}) {
@@ -109,43 +112,45 @@ function parseId(id) {
         episode
       };
     }
-
-    return { error: "Formato IMDb não reconhecido" };
   }
 
-  return { error: "Prefixo de ID não suportado" };
+  return { error: "Prefixo ou formato de ID não suportado" };
 }
 
-async function getMetadata(parsed) {
-  let response;
-
+async function getMetadata(parsed, type) {
   if (parsed.source === "kitsu") {
-    response = await http.get(
+    const response = await http.get(
       `https://kitsu.io/api/edge/anime/${encodeURIComponent(parsed.animeId)}`
     );
 
-    const attr = response.data?.data?.attributes;
+    const attributes = response.data?.data?.attributes;
 
-    if (!attr) {
+    if (!attributes) {
       throw new Error("Anime não encontrado no Kitsu");
     }
 
-    return {
-      title:
-        attr.canonicalTitle ||
-        attr.titles?.en ||
-        attr.titles?.en_jp
-    };
+    const title =
+      attributes.canonicalTitle ||
+      attributes.titles?.en ||
+      attributes.titles?.en_jp;
+
+    if (!title) {
+      throw new Error("Kitsu não retornou um título");
+    }
+
+    return { title };
   }
 
-  response = await http.get(
-    `https://v3-cinemeta.strem.fun/meta/series/${encodeURIComponent(parsed.animeId)}.json`
+  const metadataType = type === "movie" ? "movie" : "series";
+
+  const response = await http.get(
+    `https://v3-cinemeta.strem.fun/meta/${metadataType}/${encodeURIComponent(parsed.animeId)}.json`
   );
 
   const meta = response.data?.meta;
 
   if (!meta?.name) {
-    throw new Error("Anime não encontrado no Cinemeta");
+    throw new Error("Título não encontrado no Cinemeta");
   }
 
   return { title: meta.name };
@@ -157,39 +162,37 @@ builder.defineStreamHandler(async ({ type, id }) => {
   const parsed = parseId(id);
 
   if (parsed.error) {
-    log("invalid_id", { id, reason: parsed.error });
+    log("invalid_id", {
+      id,
+      reason: parsed.error
+    });
+
     return { streams: [] };
   }
 
-  if (parsed.episode == null) {
-    log("episode_missing", {
-      id,
-      message: "O ID não especifica um episódio"
-    });
-
+  if (parsed.episode === null) {
+    log("episode_missing", { id });
     return { streams: [] };
   }
 
   let metadata;
 
   try {
-    metadata = await getMetadata(parsed);
+    metadata = await getMetadata(parsed, type);
   } catch (error) {
     log("metadata_error", {
       id,
       message: error.message,
-      httpStatus: error.response?.status || null
+      status: error.response?.status || null
     });
 
     return { streams: [] };
   }
 
-  if (!metadata.title) {
-    log("metadata_error", { id, message: "Título vazio" });
-    return { streams: [] };
-  }
-
-  log("metadata_success", { id, title: metadata.title });
+  log("metadata_success", {
+    id,
+    title: metadata.title
+  });
 
   const streams = await searchAllProviders({
     title: metadata.title,
@@ -197,7 +200,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
     episode: parsed.episode
   });
 
-  log("complete", {
+  log("request_complete", {
     id,
     title: metadata.title,
     streamsFound: streams.length
@@ -205,8 +208,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
   return { streams };
 });
-
-const addonInterface = builder.getInterface();
 
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -228,10 +229,10 @@ app.get("/health", (req, res) => {
   res.json({
     ok: true,
     version: manifest.version,
-    providers: PROVIDERS.map(provider => ({
-      name: provider.name,
-      configured: Boolean(process.env[provider.env])
-    }))
+    providerConfigured: Boolean(
+      process.env.AUTHORIZED_PROVIDER_API_URL
+    ),
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -255,8 +256,26 @@ app.get("/stream/:type/:id.json", async (req, res) => {
       id: req.params.id
     });
 
-    res.status(500).json({ streams: [] });
+    res.status(500).json({
+      streams: [],
+      error: "Falha ao processar a solicitação"
+    });
   }
+});
+
+app.use((error, req, res, next) => {
+  log("unhandled_error", {
+    message: error.message,
+    path: req.path
+  });
+
+  if (res.headersSent) {
+    return next(error);
+  }
+
+  res.status(500).json({
+    error: "Erro interno do servidor"
+  });
 });
 
 if (require.main === module) {
