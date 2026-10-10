@@ -1,17 +1,192 @@
-
 const express = require("express");
 const axios = require("axios");
 const { addonBuilder } = require("stremio-addon-sdk");
-const { searchAllProviders } = require("./providers");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const http = axios.create({
+  timeout: 4000,
+  headers: {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+  }
+});
+
+function sanitizeTitle(str) {
+  if (!str) return "";
+  return str
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseId(id) {
+  if (typeof id !== "string" || !id.trim()) return { error: "ID ausente" };
+  const parts = id.split(":");
+
+  if (/^kitsu$/i.test(parts[0])) {
+    if (parts.length === 2) return { source: "kitsu", animeId: parts[1], season: 1, episode: null };
+    if (parts.length === 4) {
+      return { source: "kitsu", animeId: parts[1], season: Number(parts[2]), episode: Number(parts[3]) };
+    }
+  }
+
+  if (/^tt\d+$/i.test(parts[0])) {
+    if (parts.length === 1) return { source: "imdb", animeId: parts[0], season: 1, episode: null };
+    if (parts.length === 3) return { source: "imdb", animeId: parts[0], season: Number(parts[1]), episode: Number(parts[2]) };
+  }
+
+  return { error: "Formato de ID não suportado" };
+}
+
+async function getMetadata(parsed, type) {
+  if (parsed.source === "kitsu") {
+    const res = await http.get(`https://kitsu.io/api/edge/anime/${encodeURIComponent(parsed.animeId)}`);
+    const attr = res.data?.data?.attributes;
+    if (!attr) throw new Error("Anime não encontrado no Kitsu");
+    return { title: attr.canonicalTitle || attr.titles?.en || attr.titles?.en_jp };
+  }
+
+  const metaType = type === "movie" ? "movie" : "series";
+  const res = await http.get(`https://v3-cinemeta.strem.fun/meta/${metaType}/${encodeURIComponent(parsed.animeId)}.json`);
+  const meta = res.data?.meta;
+  if (!meta?.name) throw new Error("Título não encontrado no Cinemeta");
+  return { title: meta.name };
+}
+
+// 1. AnimesOnlineCC
+async function scrapeAnimesOnlineCC(title, episode) {
+  const streams = [];
+  try {
+    const clean = sanitizeTitle(title);
+    const searchRes = await http.get(`https://animesonlinecc.to/?s=${encodeURIComponent(clean)}`);
+    const html = searchRes.data || "";
+
+    const linkMatch = html.match(/href="(https?:\/\/animesonlinecc\.to\/anime\/[^"]+)"/i);
+    const animeUrl = linkMatch ? linkMatch[1] : null;
+    if (!animeUrl) return [];
+
+    const epUrl = `${animeUrl.replace(/\/$/, "")}-episodio-${episode}/`;
+    const epRes = await http.get(epUrl);
+    const epHtml = epRes.data || "";
+
+    const iframeMatches = epHtml.matchAll(/src="(https?:\/\/[^"]+)"/gi);
+    for (const match of iframeMatches) {
+      const src = match[1];
+      if (src && !src.includes("facebook") && !src.includes("disqus")) {
+        streams.push({ name: "AnimesOnlineCC", title: `AnimesOnlineCC — Ep ${episode}`, url: src });
+      }
+    }
+  } catch (e) {}
+  return streams;
+}
+
+// 2. AnimesDigital
+async function scrapeAnimesDigital(title, episode) {
+  const streams = [];
+  try {
+    const clean = sanitizeTitle(title);
+    const searchRes = await http.get(`https://animesdigital.org/?s=${encodeURIComponent(clean)}`);
+    const html = searchRes.data || "";
+
+    const linkMatch = html.match(/href="(https?:\/\/animesdigital\.org\/anime\/[^"]+)"/i);
+    const animeUrl = linkMatch ? linkMatch[1] : null;
+    if (!animeUrl) return [];
+
+    const epUrl = `${animeUrl.replace(/\/$/, "")}-episodio-${episode}/`;
+    const epRes = await http.get(epUrl);
+    const epHtml = epRes.data || "";
+
+    const iframeMatches = epHtml.matchAll(/src="(https?:\/\/[^"]+)"/gi);
+    for (const match of iframeMatches) {
+      const src = match[1];
+      if (src && !src.includes("disqus")) {
+        streams.push({ name: "AnimesDigital", title: `AnimesDigital — Ep ${episode}`, url: src });
+      }
+    }
+  } catch (e) {}
+  return streams;
+}
+
+// 3. Goyabu
+async function scrapeGoyabu(title, episode) {
+  const streams = [];
+  try {
+    const clean = sanitizeTitle(title);
+    const searchRes = await http.get(`https://goyabu.org/?s=${encodeURIComponent(clean)}`);
+    const html = searchRes.data || "";
+
+    const linkMatch = html.match(/href="(https?:\/\/goyabu\.org\/[^"]+)"/i);
+    const animeUrl = linkMatch ? linkMatch[1] : null;
+    if (!animeUrl) return [];
+
+    const epRes = await http.get(animeUrl);
+    const epHtml = epRes.data || "";
+
+    const iframeMatches = epHtml.matchAll(/src="(https?:\/\/[^"]+)"/gi);
+    for (const match of iframeMatches) {
+      const src = match[1];
+      if (src) streams.push({ name: "Goyabu", title: `Goyabu — Ep ${episode}`, url: src });
+    }
+  } catch (e) {}
+  return streams;
+}
+
+// 4. AnimesOrion
+async function scrapeAnimesOrion(title, episode) {
+  const streams = [];
+  try {
+    const clean = sanitizeTitle(title);
+    const searchRes = await http.get(`https://animesorion.vip/?s=${encodeURIComponent(clean)}`);
+    const html = searchRes.data || "";
+
+    const linkMatch = html.match(/href="(https?:\/\/animesorion\.vip\/[^"]+)"/i);
+    const animeUrl = linkMatch ? linkMatch[1] : null;
+    if (!animeUrl) return [];
+
+    const epRes = await http.get(animeUrl);
+    const epHtml = epRes.data || "";
+
+    const iframeMatches = epHtml.matchAll(/src="(https?:\/\/[^"]+)"/gi);
+    for (const match of iframeMatches) {
+      const src = match[1];
+      if (src) streams.push({ name: "AnimesOrion", title: `AnimesOrion — Ep ${episode}`, url: src });
+    }
+  } catch (e) {}
+  return streams;
+}
+
+async function searchAllProviders(query) {
+  const results = await Promise.allSettled([
+    scrapeAnimesOnlineCC(query.title, query.episode),
+    scrapeAnimesDigital(query.title, query.episode),
+    scrapeGoyabu(query.title, query.episode),
+    scrapeAnimesOrion(query.title, query.episode)
+  ]);
+
+  const streams = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+  const unique = [];
+  const seen = new Set();
+
+  for (const s of streams) {
+    if (s.url && !seen.has(s.url)) {
+      seen.add(s.url);
+      unique.push(s);
+    }
+  }
+
+  return unique;
+}
+
 const manifest = {
   id: "br.meuanime.addon",
-  version: "1.3.1",
+  version: "1.3.2",
   name: "Animes BR",
-  description: "Addon de animes com fontes autorizadas configuráveis.",
+  description: "Addon de animes PT-BR para Stremio.",
   resources: ["stream"],
   types: ["anime", "series", "movie"],
   idPrefixes: ["tt", "kitsu"],
@@ -20,182 +195,17 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-const http = axios.create({
-  timeout: 10000,
-  headers: {
-    Accept: "application/json"
-  }
-});
-
-function log(stage, details = {}) {
-  console.log(JSON.stringify({
-    time: new Date().toISOString(),
-    stage,
-    ...details
-  }));
-}
-
-function parseId(id) {
-  if (typeof id !== "string" || !id.trim()) {
-    return { error: "ID ausente" };
-  }
-
-  const parts = id.split(":");
-
-  if (/^kitsu$/i.test(parts[0])) {
-    if (!/^\d+$/.test(parts[1] || "")) {
-      return { error: "ID Kitsu inválido" };
-    }
-
-    if (parts.length === 2) {
-      return {
-        source: "kitsu",
-        animeId: parts[1],
-        season: 1,
-        episode: null
-      };
-    }
-
-    if (parts.length === 4) {
-      const season = Number(parts[2]);
-      const episode = Number(parts[3]);
-
-      if (
-        !Number.isInteger(season) ||
-        !Number.isInteger(episode) ||
-        season < 0 ||
-        episode < 1
-      ) {
-        return { error: "Temporada ou episódio inválido" };
-      }
-
-      return {
-        source: "kitsu",
-        animeId: parts[1],
-        season,
-        episode
-      };
-    }
-
-    return { error: "Formato Kitsu não reconhecido" };
-  }
-
-  if (/^tt\d+$/i.test(parts[0])) {
-    if (parts.length === 1) {
-      return {
-        source: "imdb",
-        animeId: parts[0],
-        season: 1,
-        episode: null
-      };
-    }
-
-    if (parts.length === 3) {
-      const season = Number(parts[1]);
-      const episode = Number(parts[2]);
-
-      if (
-        !Number.isInteger(season) ||
-        !Number.isInteger(episode) ||
-        season < 0 ||
-        episode < 1
-      ) {
-        return { error: "Temporada ou episódio inválido" };
-      }
-
-      return {
-        source: "imdb",
-        animeId: parts[0],
-        season,
-        episode
-      };
-    }
-  }
-
-  return { error: "Prefixo ou formato de ID não suportado" };
-}
-
-async function getMetadata(parsed, type) {
-  if (parsed.source === "kitsu") {
-    const response = await http.get(
-      `https://kitsu.io/api/edge/anime/${encodeURIComponent(parsed.animeId)}`
-    );
-
-    const attributes = response.data?.data?.attributes;
-
-    if (!attributes) {
-      throw new Error("Anime não encontrado no Kitsu");
-    }
-
-    const title =
-      attributes.canonicalTitle ||
-      attributes.titles?.en ||
-      attributes.titles?.en_jp;
-
-    if (!title) {
-      throw new Error("O Kitsu não retornou um título");
-    }
-
-    return { title };
-  }
-
-  const metadataType = type === "movie" ? "movie" : "series";
-
-  const response = await http.get(
-    `https://v3-cinemeta.strem.fun/meta/${metadataType}/${encodeURIComponent(parsed.animeId)}.json`
-  );
-
-  const meta = response.data?.meta;
-
-  if (!meta?.name) {
-    throw new Error("Título não encontrado no Cinemeta");
-  }
-
-  return { title: meta.name };
-}
-
 builder.defineStreamHandler(async ({ type, id }) => {
-  log("request", { type, id });
-
-  if (!manifest.types.includes(type)) {
-    log("unsupported_type", { type, id });
-    return { streams: [] };
-  }
-
+  if (!manifest.types.includes(type)) return { streams: [] };
   const parsed = parseId(id);
-
-  if (parsed.error) {
-    log("invalid_id", {
-      id,
-      reason: parsed.error
-    });
-
-    return { streams: [] };
-  }
-
-  if (parsed.episode === null) {
-    log("episode_missing", { id });
-    return { streams: [] };
-  }
+  if (parsed.error || parsed.episode === null) return { streams: [] };
 
   let metadata;
-
   try {
     metadata = await getMetadata(parsed, type);
-  } catch (error) {
-    log("metadata_error", {
-      id,
-      message: error.message,
-      status: error.response?.status || null
-    });
-
+  } catch (e) {
     return { streams: [] };
   }
-
-  log("metadata_success", {
-    id,
-    title: metadata.title
-  });
 
   const streams = await searchAllProviders({
     title: metadata.title,
@@ -203,91 +213,34 @@ builder.defineStreamHandler(async ({ type, id }) => {
     episode: parsed.episode
   });
 
-  log("request_complete", {
-    id,
-    title: metadata.title,
-    streamsFound: streams.length
-  });
-
   return { streams };
 });
 
-// IMPORTANTE: registrar o handler antes de getInterface().
 const addonInterface = builder.getInterface();
 
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
-  }
-
+  if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
-app.get("/", (req, res) => {
-  res.redirect("/manifest.json");
-});
-
-app.get("/health", (req, res) => {
-  res.json({
-    ok: true,
-    version: manifest.version,
-    providerConfigured: Boolean(
-      process.env.AUTHORIZED_PROVIDER_API_URL
-    ),
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.get("/manifest.json", (req, res) => {
-  res.json(addonInterface.manifest);
-});
+app.get("/", (req, res) => res.redirect("/manifest.json"));
+app.get("/manifest.json", (req, res) => res.json(addonInterface.manifest));
+app.get("/health", (req, res) => res.json({ status: "ok", version: manifest.version }));
 
 app.get("/stream/:type/:id.json", async (req, res) => {
   try {
-    const result = await addonInterface.get(
-      "stream",
-      req.params.type,
-      req.params.id
-    );
-
+    const result = await addonInterface.get("stream", req.params.type, req.params.id);
     res.json(result);
   } catch (error) {
-    log("endpoint_error", {
-      message: error.message,
-      type: req.params.type,
-      id: req.params.id
-    });
-
-    res.status(500).json({
-      streams: [],
-      error: "Falha ao processar a solicitação"
-    });
+    res.status(500).json({ streams: [] });
   }
-});
-
-app.use((error, req, res, next) => {
-  log("unhandled_error", {
-    message: error.message,
-    path: req.path
-  });
-
-  if (res.headersSent) {
-    return next(error);
-  }
-
-  res.status(500).json({
-    error: "Erro interno do servidor"
-  });
 });
 
 if (require.main === module) {
-  app.listen(PORT, () => {
-    log("server_started", { port: PORT });
-  });
+  app.listen(PORT, () => console.log(`Rodando na porta ${PORT}`));
 }
 
 module.exports = app;
