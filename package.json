@@ -1,14 +1,11 @@
 {
-  "name": "stremio-anime-addon-br",
+  "name": "anime-addon",
   "version": "1.0.2",
-  "description": "Addon de animes em PT-BR para Stremio",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
+  "main": "api/index.js",
   "dependencies": {
     "axios": "^1.6.0",
     "cheerio": "^1.0.0-rc.12",
+    "express": "^4.18.2",
     "stremio-addon-sdk": "^1.6.0"
   }
 }

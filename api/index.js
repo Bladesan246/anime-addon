@@ -1,6 +1,9 @@
+const express = require("express");
 const { addonBuilder } = require("stremio-addon-sdk");
 const axios = require("axios");
 const cheerio = require("cheerio");
+
+const app = express();
 
 const client = axios.create({
   headers: {
@@ -137,40 +140,29 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
 const addonInterface = builder.getInterface();
 
-module.exports = async (req, res) => {
+// Libera CORS para o Stremio em todas as rotas
+app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
 
-  if (req.method === "OPTIONS") {
-    res.statusCode = 200;
-    return res.end();
+// Rota do Manifesto
+app.get(["/", "/manifest.json"], (req, res) => {
+  res.json(addonInterface.manifest);
+});
+
+// Rota dos Streams
+app.get("/stream/:type/:id.json", async (req, res) => {
+  const { type, id } = req.params;
+  try {
+    const resp = await addonInterface.get("stream", type, id);
+    res.json(resp);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
+});
 
-  const rawUrl = req.url.split("?")[0].toLowerCase();
-
-  if (rawUrl === "/" || rawUrl === "/manifest.json" || rawUrl.endsWith("/manifest.json")) {
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    return res.end(JSON.stringify(addonInterface.manifest));
-  }
-
-  if (rawUrl.includes("/stream/")) {
-    const parts = req.url.split("/");
-    const type = parts[2];
-    const id = parts[3] ? parts[3].replace(".json", "") : "";
-
-    try {
-      const resp = await addonInterface.get("stream", type, id);
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      return res.end(JSON.stringify(resp));
-    } catch (err) {
-      res.statusCode = 500;
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      return res.end(JSON.stringify({ error: err.message }));
-    }
-  }
-
-  res.statusCode = 404;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify({ error: "Not Found" }));
-};
+module.exports = app;
