@@ -10,105 +10,137 @@ const client = axios.create({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
   },
-  timeout: 6000
+  timeout: 8000
 });
 
-/**
- * Busca o título do anime DINAMICAMENTE (sem lista fixa)
- */
-async function getAnimeTitle(id) {
+// Limpa pontuações e caracteres especiais para melhorar os resultados de busca
+function sanitizeTitle(str) {
+  if (!str) return "";
+  return str
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function getAnimeTitles(id) {
   const parts = id.split(":");
   const mainId = parts[0];
+  const rawTitles = new Set();
 
-  // 1. Busca no Kitsu se for ID de anime
+  // 1. Consulta no Kitsu (Idiomas: Japonês Romaji, Inglês e Canónico)
   if (id.startsWith("kitsu")) {
     try {
       const res = await client.get(`https://kitsu.io/api/edge/anime/${parts[1]}`);
-      const attr = res.data && res.data.data && res.data.data.attributes;
+      const attr = res.data?.data?.attributes;
       if (attr) {
-        return attr.canonicalTitle || attr.titles.en || attr.titles.en_jp;
+        if (attr.canonicalTitle) rawTitles.add(attr.canonicalTitle);
+        if (attr.titles?.en_jp) rawTitles.add(attr.titles.en_jp);
+        if (attr.titles?.en) rawTitles.add(attr.titles.en);
+        if (attr.titles?.ja_jp) rawTitles.add(attr.titles.ja_jp);
       }
     } catch (e) {}
   }
 
-  // 2. Busca no Cinemeta ou Fallback Kitsu se for ID do IMDb (ttXXXXX)
+  // 2. Consulta no Cinemeta (IMDb ID ttXXXXX)
   if (mainId.startsWith("tt")) {
     try {
       const res = await client.get(`https://v3-cinemeta.strem.fun/meta/series/${mainId}.json`);
-      if (res.data && res.data.meta && res.data.meta.name) {
-        return res.data.meta.name;
+      if (res.data?.meta?.name) {
+        rawTitles.add(res.data.meta.name);
       }
-    } catch (e) {
-      try {
-        const kitsuRes = await client.get(`https://kitsu.io/api/edge/anime?filter[text]=${mainId}`);
-        const attr = kitsuRes.data && kitsuRes.data.data && kitsuRes.data.data[0] && kitsuRes.data.data[0].attributes;
-        if (attr) {
-          return attr.canonicalTitle || attr.titles.en;
-        }
-      } catch (err) {}
-    }
+    } catch (e) {}
+
+    try {
+      const kitsuRes = await client.get(`https://kitsu.io/api/edge/anime?filter[text]=${mainId}`);
+      const attr = kitsuRes.data?.data?.[0]?.attributes;
+      if (attr) {
+        if (attr.canonicalTitle) rawTitles.add(attr.canonicalTitle);
+        if (attr.titles?.en_jp) rawTitles.add(attr.titles.en_jp);
+        if (attr.titles?.en) rawTitles.add(attr.titles.en);
+      }
+    } catch (err) {}
   }
 
-  return null;
+  // Monta lista com versões originais e tratadas
+  const searchQueries = new Set();
+  rawTitles.forEach((t) => {
+    if (t) {
+      searchQueries.add(t);
+      searchQueries.add(sanitizeTitle(t));
+    }
+  });
+
+  return Array.from(searchQueries);
 }
 
-async function scrapeAnimesOnline(title, episode) {
+async function scrapeAnimesOnlineForQuery(query, episode) {
   const streams = [];
   try {
-    const searchUrl = `https://animesonlinecc.to/?s=${encodeURIComponent(title)}`;
+    const searchUrl = `https://animesonlinecc.to/?s=${encodeURIComponent(query)}`;
     const { data: searchHtml } = await client.get(searchUrl);
     const $search = cheerio.load(searchHtml);
 
     let animeUrls = [];
-    $search(".result-item article .details .title a").each((_, el) => {
-      const foundTitle = $search(el).text().trim().toLowerCase();
-      const cleanTitle = title.toLowerCase();
-
-      if (foundTitle.includes(cleanTitle) || cleanTitle.includes(foundTitle)) {
-        const href = $search(el).attr("href");
-        if (href) animeUrls.push(href);
+    $search(".result-item article .details .title a, article a").each((_, el) => {
+      const href = $search(el).attr("href");
+      if (href && !animeUrls.includes(href)) {
+        animeUrls.push(href);
       }
     });
 
-    if (animeUrls.length === 0) {
-      const firstHref = $search(".result-item article .details .title a").first().attr("href");
-      if (firstHref) animeUrls.push(firstHref);
-    }
-
-    for (const animeUrl of animeUrls.slice(0, 2)) {
+    for (const animeUrl of animeUrls.slice(0, 3)) {
       const { data: animeHtml } = await client.get(animeUrl);
       const $anime = cheerio.load(animeHtml);
 
-      let epUrl = "";
+      let epUrls = [];
       $anime("#episodios li, .episodios li, ul.episodios li").each((_, el) => {
         const epText = $anime(el).text().trim().toLowerCase();
         const link = $anime(el).find("a").attr("href");
 
-        if (epText.includes(`episódio ${episode}`) || epText.includes(`ep ${episode}`) || epText.endsWith(` ${episode}`)) {
-          epUrl = link;
+        // Verifica equivalência do número do episódio
+        if (
+          epText.includes(`episodio ${episode}`) ||
+          epText.includes(`episódio ${episode}`) ||
+          epText.includes(`ep ${episode}`) ||
+          epText.endsWith(` ${episode}`)
+        ) {
+          if (link) epUrls.push(link);
         }
       });
 
-      if (epUrl) {
+      for (const epUrl of epUrls.slice(0, 2)) {
         const { data: epHtml } = await client.get(epUrl);
         const $ep = cheerio.load(epHtml);
 
-        $ep("iframe, video source, embed").each((_, el) => {
+        $ep("iframe, video source, embed, option").each((_, el) => {
           let src = "";
-          const attrs = ["src", "data-src", "data-lazy-src"];
+          const attrs = ["src", "data-src", "data-lazy-src", "value"];
 
           for (const attr of attrs) {
             const val = $ep(el).attr(attr);
-            if (val) {
+            if (val && (val.includes("http") || val.includes("//"))) {
               src = val;
               break;
             }
           }
 
-          if (src && !src.includes("facebook") && !src.includes("disqus")) {
+          if (
+            src &&
+            !src.includes("facebook") &&
+            !src.includes("disqus") &&
+            !src.includes("twitter")
+          ) {
             if (src.startsWith("//")) src = "https:" + src;
+
+            const isDub =
+              epHtml.toLowerCase().includes("dublado") ||
+              animeUrl.toLowerCase().includes("dublado");
+            const label = isDub ? "Dublado" : "Legendado";
+
             streams.push({
-              title: `🌐 AnimesOnline - ${title} (Ep ${episode})`,
+              title: `🌐 AnimesOnline (${label}) - Ep ${episode}\n[Busca: ${query}]`,
               url: src
             });
           }
@@ -121,19 +153,30 @@ async function scrapeAnimesOnline(title, episode) {
 
 async function fetchAnimeStreams(id) {
   const parts = id.split(":");
-  const episode = parts.length > 2 ? parts[2] : (parts[1] || "1");
+  const episode = parts.length > 2 ? parts[2] : parts[1] || "1";
 
-  const title = await getAnimeTitle(id);
-  if (!title) return [];
+  const queries = await getAnimeTitles(id);
+  if (queries.length === 0) return [];
 
-  return await scrapeAnimesOnline(title, episode);
+  let allStreams = [];
+
+  // Testa as buscas sequencialmente até obter resultados
+  for (const query of queries) {
+    const streams = await scrapeAnimesOnlineForQuery(query, episode);
+    if (streams.length > 0) {
+      allStreams = allStreams.concat(streams);
+      break;
+    }
+  }
+
+  return allStreams;
 }
 
 const manifest = {
   id: "br.meuanime.addon",
-  version: "1.0.3",
+  version: "1.0.5",
   name: "Animes BR",
-  description: "Addon de animes PT-BR.",
+  description: "Addon de animes PT-BR com busca multi-idioma.",
   resources: ["stream"],
   types: ["anime", "series", "movie"],
   idPrefixes: ["tt", "kitsu"],
