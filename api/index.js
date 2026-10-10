@@ -67,7 +67,7 @@ async function scrapeAnimesOnline(title, episode) {
     $search(".result-item article .details .title a").each((_, el) => {
       const foundTitle = $search(el).text().trim().toLowerCase();
       const cleanTitle = title.toLowerCase();
-      
+
       if (foundTitle.includes(cleanTitle) || cleanTitle.includes(foundTitle)) {
         const href = $search(el).attr("href");
         if (href) animeUrls.push(href);
@@ -98,7 +98,17 @@ async function scrapeAnimesOnline(title, episode) {
         const $ep = cheerio.load(epHtml);
 
         $ep("iframe, video source, embed").each((_, el) => {
-          let src = $ep(el).attr("src") || $ep(el).attr("data-src") \vert{}\vert{} $ep(el).attr("data-lazy-src");
+          let src = "";
+          const attrs = ["src", "data-src", "data-lazy-src"];
+          
+          for (const attr of attrs) {
+            const val = $ep(el).attr(attr);
+            if (val) {
+              src = val;
+              break;
+            }
+          }
+
           if (src && !src.includes("facebook") && !src.includes("disqus")) {
             if (src.startsWith("//")) src = "https:" + src;
             streams.push({
@@ -128,7 +138,7 @@ const manifest = {
   name: "Animes BR",
   description: "Addon de animes em PT-BR para Stremio.",
   resources: ["stream"],
-  types: ["anime", "series"],
+  types: ["anime", "series", "movie"],
   idPrefixes: ["tt", "kitsu"],
   catalogs: []
 };
@@ -159,14 +169,16 @@ app.use((req, res, next) => {
 });
 
 app.get(["/", "/manifest.json"], (req, res) => {
-  res.json(addonInterface.manifest);
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.send(JSON.stringify(addonInterface.manifest));
 });
 
 app.get("/stream/:type/:id.json", async (req, res) => {
   const { type, id } = req.params;
   try {
     const resp = await addonInterface.get("stream", type, id);
-    res.json(resp);
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.send(JSON.stringify(resp));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
