@@ -2,7 +2,7 @@
 const express = require("express");
 const axios = require("axios");
 const { addonBuilder } = require("stremio-addon-sdk");
-const { PROVIDERS, searchAllProviders } = require("./providers");
+const { PROVIDERS, searchAllProviders } = require("./api/providers");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
