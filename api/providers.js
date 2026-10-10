@@ -65,7 +65,11 @@ async function scrapeAnimesOnlineCC(query) {
     $anime("#episodios li, .episodios li").each((_, el) => {
       const text = $anime(el).text().trim().toLowerCase();
       const link = $anime(el).find("a").attr("href");
-      if (text.includes(`episodio ${query.episode}`) || text.includes(`ep ${query.episode}`) || text.endsWith(` ${query.episode}`)) {
+      if (
+        text.includes(`episodio ${query.episode}`) ||
+        text.includes(`ep ${query.episode}`) ||
+        text.endsWith(` ${query.episode}`)
+      ) {
         if (link) epUrl = link;
       }
     });
@@ -115,7 +119,10 @@ async function scrapeAnimesDigital(query) {
     $anime(".episodios li, #episodios li").each((_, el) => {
       const text = $anime(el).text().toLowerCase();
       const link = $anime(el).find("a").attr("href");
-      if (text.includes(`episodio ${query.episode}`) || text.includes(`ep ${query.episode}`)) {
+      if (
+        text.includes(`episodio ${query.episode}`) ||
+        text.includes(`ep ${query.episode}`)
+      ) {
         if (link) epUrl = link;
       }
     });
@@ -165,7 +172,11 @@ async function scrapeGoyabu(query) {
     $anime(".eps-single a, .episode-list a").each((_, el) => {
       const text = $anime(el).text().toLowerCase();
       const link = $anime(el).attr("href");
-      if (text.includes(`episodio ${query.episode}`) || text.includes(`ep ${query.episode}`) || text.endsWith(`${query.episode}`)) {
+      if (
+        text.includes(`episodio ${query.episode}`) ||
+        text.includes(`ep ${query.episode}`) ||
+        text.endsWith(`${query.episode}`)
+      ) {
         if (link) epUrl = link;
       }
     });
@@ -214,8 +225,13 @@ async function scrapeAnimesOrion(query) {
     let epUrl = "";
     $anime(".episodios li, .single-eps a").each((_, el) => {
       const text = $anime(el).text().toLowerCase();
-      const link = $anime(el).find("a").attr("href") \vert{}\vert{} $anime(el).attr("href");
-      if (text.includes(`episodio ${query.episode}`) || text.includes(`ep ${query.episode}`)) {
+      // CORRIGIDO: || em vez de \vert{}\vert{}
+      const link =
+        $anime(el).find("a").attr("href") || $anime(el).attr("href");
+      if (
+        text.includes(`episodio ${query.episode}`) ||
+        text.includes(`ep ${query.episode}`)
+      ) {
         if (link) epUrl = link;
       }
     });
@@ -251,7 +267,9 @@ async function searchAllProviders(query) {
     scrapeAnimesOrion(query)
   ]);
 
-  const streams = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+  const streams = results.flatMap((r) =>
+    r.status === "fulfilled" ? r.value : []
+  );
 
   const unique = [];
   const seen = new Set();
