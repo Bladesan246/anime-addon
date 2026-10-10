@@ -7,13 +7,13 @@ const app = express();
 
 const client = axios.create({
   headers: {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
   },
-  timeout: 8000
+  timeout: 4500
 });
 
-// Limpa pontuações e caracteres especiais para melhorar os resultados de busca
 function sanitizeTitle(str) {
   if (!str) return "";
   return str
@@ -27,28 +27,23 @@ function sanitizeTitle(str) {
 async function getAnimeTitles(id) {
   const parts = id.split(":");
   const mainId = parts[0];
-  const rawTitles = new Set();
+  const titles = new Set();
 
-  // 1. Consulta no Kitsu (Idiomas: Japonês Romaji, Inglês e Canónico)
   if (id.startsWith("kitsu")) {
     try {
       const res = await client.get(`https://kitsu.io/api/edge/anime/${parts[1]}`);
       const attr = res.data?.data?.attributes;
       if (attr) {
-        if (attr.canonicalTitle) rawTitles.add(attr.canonicalTitle);
-        if (attr.titles?.en_jp) rawTitles.add(attr.titles.en_jp);
-        if (attr.titles?.en) rawTitles.add(attr.titles.en);
-        if (attr.titles?.ja_jp) rawTitles.add(attr.titles.ja_jp);
+        if (attr.canonicalTitle) titles.add(attr.canonicalTitle);
+        if (attr.titles?.en_jp) titles.add(attr.titles.en_jp);
+        if (attr.titles?.en) titles.add(attr.titles.en);
       }
     } catch (e) {}
-  }
-
-  // 2. Consulta no Cinemeta (IMDb ID ttXXXXX)
-  if (mainId.startsWith("tt")) {
+  } else if (mainId.startsWith("tt")) {
     try {
       const res = await client.get(`https://v3-cinemeta.strem.fun/meta/series/${mainId}.json`);
       if (res.data?.meta?.name) {
-        rawTitles.add(res.data.meta.name);
+        titles.add(res.data.meta.name);
       }
     } catch (e) {}
 
@@ -56,26 +51,24 @@ async function getAnimeTitles(id) {
       const kitsuRes = await client.get(`https://kitsu.io/api/edge/anime?filter[text]=${mainId}`);
       const attr = kitsuRes.data?.data?.[0]?.attributes;
       if (attr) {
-        if (attr.canonicalTitle) rawTitles.add(attr.canonicalTitle);
-        if (attr.titles?.en_jp) rawTitles.add(attr.titles.en_jp);
-        if (attr.titles?.en) rawTitles.add(attr.titles.en);
+        if (attr.canonicalTitle) titles.add(attr.canonicalTitle);
+        if (attr.titles?.en_jp) titles.add(attr.titles.en_jp);
       }
     } catch (err) {}
   }
 
-  // Monta lista com versões originais e tratadas
-  const searchQueries = new Set();
-  rawTitles.forEach((t) => {
+  const queries = new Set();
+  titles.forEach((t) => {
     if (t) {
-      searchQueries.add(t);
-      searchQueries.add(sanitizeTitle(t));
+      queries.add(t);
+      queries.add(sanitizeTitle(t));
     }
   });
 
-  return Array.from(searchQueries);
+  return Array.from(queries);
 }
 
-async function scrapeAnimesOnlineForQuery(query, episode) {
+async function scrapeAnimesOnlineQuery(query, episode) {
   const streams = [];
   try {
     const searchUrl = `https://animesonlinecc.to/?s=${encodeURIComponent(query)}`;
@@ -83,34 +76,39 @@ async function scrapeAnimesOnlineForQuery(query, episode) {
     const $search = cheerio.load(searchHtml);
 
     let animeUrls = [];
-    $search(".result-item article .details .title a, article a").each((_, el) => {
+    $search(".result-item article .details .title a, article a, .items article a").each((_, el) => {
       const href = $search(el).attr("href");
-      if (href && !animeUrls.includes(href)) {
+      if (href && href.includes("animesonline") && !animeUrls.includes(href)) {
         animeUrls.push(href);
       }
     });
 
-    for (const animeUrl of animeUrls.slice(0, 3)) {
+    for (const animeUrl of animeUrls.slice(0, 2)) {
       const { data: animeHtml } = await client.get(animeUrl);
       const $anime = cheerio.load(animeHtml);
 
-      let epUrls = [];
-      $anime("#episodios li, .episodios li, ul.episodios li").each((_, el) => {
+      let epUrl = "";
+      $anime("#episodios li, .episodios li, ul.episodios li, .list-episodios li").each((_, el) => {
         const epText = $anime(el).text().trim().toLowerCase();
         const link = $anime(el).find("a").attr("href");
 
-        // Verifica equivalência do número do episódio
         if (
           epText.includes(`episodio ${episode}`) ||
           epText.includes(`episódio ${episode}`) ||
           epText.includes(`ep ${episode}`) ||
-          epText.endsWith(` ${episode}`)
+          epText.endsWith(` ${episode}`) ||
+          epText.includes(` ${episode} `)
         ) {
-          if (link) epUrls.push(link);
+          if (link) epUrl = link;
         }
       });
 
-      for (const epUrl of epUrls.slice(0, 2)) {
+      if (!epUrl) {
+        // Fallback: tentar montar URL padrão de episódio se não achar no menu
+        epUrl = `${animeUrl.replace(/\/$/, "")}-episodio-${episode}/`;
+      }
+
+      try {
         const { data: epHtml } = await client.get(epUrl);
         const $ep = cheerio.load(epHtml);
 
@@ -130,7 +128,8 @@ async function scrapeAnimesOnlineForQuery(query, episode) {
             src &&
             !src.includes("facebook") &&
             !src.includes("disqus") &&
-            !src.includes("twitter")
+            !src.includes("twitter") &&
+            !src.includes("google")
           ) {
             if (src.startsWith("//")) src = "https:" + src;
 
@@ -140,12 +139,12 @@ async function scrapeAnimesOnlineForQuery(query, episode) {
             const label = isDub ? "Dublado" : "Legendado";
 
             streams.push({
-              title: `🌐 AnimesOnline (${label}) - Ep ${episode}\n[Busca: ${query}]`,
+              title: `🌐 AnimesOnline (${label}) - Ep ${episode}`,
               url: src
             });
           }
         });
-      }
+      } catch (e) {}
     }
   } catch (err) {}
   return streams;
@@ -158,25 +157,26 @@ async function fetchAnimeStreams(id) {
   const queries = await getAnimeTitles(id);
   if (queries.length === 0) return [];
 
-  let allStreams = [];
+  // Busca em paralelo para evitar timeout na Vercel
+  const results = await Promise.allSettled(
+    queries.slice(0, 3).map((q) => scrapeAnimesOnlineQuery(q, episode))
+  );
 
-  // Testa as buscas sequencialmente até obter resultados
-  for (const query of queries) {
-    const streams = await scrapeAnimesOnlineForQuery(query, episode);
-    if (streams.length > 0) {
-      allStreams = allStreams.concat(streams);
-      break;
+  let allStreams = [];
+  results.forEach((res) => {
+    if (res.status === "fulfilled" && Array.isArray(res.value)) {
+      allStreams = allStreams.concat(res.value);
     }
-  }
+  });
 
   return allStreams;
 }
 
 const manifest = {
   id: "br.meuanime.addon",
-  version: "1.0.5",
+  version: "1.0.6",
   name: "Animes BR",
-  description: "Addon de animes PT-BR com busca multi-idioma.",
+  description: "Addon de animes PT-BR para Stremio.",
   resources: ["stream"],
   types: ["anime", "series", "movie"],
   idPrefixes: ["tt", "kitsu"],
@@ -187,15 +187,32 @@ const builder = new addonBuilder(manifest);
 
 builder.defineStreamHandler(async ({ type, id }) => {
   let streams = await fetchAnimeStreams(id);
-  if (!streams || streams.length === 0) {
-    streams = [
-      {
-        title: "⚠️ Nenhum stream encontrado para este episódio",
-        url: "https://vjs.zencdn.net/v/oceans.mp4"
+
+  // Remove URLs duplicadas
+  const uniqueStreams = [];
+  const seenUrls = new Set();
+  if (streams && streams.length > 0) {
+    for (const s of streams) {
+      if (!seenUrls.has(s.url)) {
+        seenUrls.add(s.url);
+        uniqueStreams.push(s);
       }
-    ];
+    }
   }
-  return { streams, cacheMaxAge: 0 };
+
+  if (uniqueStreams.length === 0) {
+    return {
+      streams: [
+        {
+          title: "⚠️ Nenhum stream encontrado para este episódio",
+          url: "https://vjs.zencdn.net/v/oceans.mp4"
+        }
+      ],
+      cacheMaxAge: 0
+    };
+  }
+
+  return { streams: uniqueStreams, cacheMaxAge: 0 };
 });
 
 const addonInterface = builder.getInterface();
