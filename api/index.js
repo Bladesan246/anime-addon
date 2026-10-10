@@ -13,42 +13,38 @@ const client = axios.create({
   timeout: 6000
 });
 
-const FALLBACK_MAP = {
-  "tt0214341": "Dragon Ball",
-  "tt0280249": "Dragon Ball Z",
-  "tt0988824": "Dragon Ball Super",
-  "tt0409591": "Naruto",
-  "tt0988822": "Naruto Shippuden",
-  "tt0388629": "One Piece",
-  "tt2560140": "Shingeki no Kyojin",
-  "tt4644488": "One Punch Man",
-  "tt12343534": "Jujutsu Kaisen",
-  "tt9335498": "Kimetsu no Yaiba"
-};
-
+/**
+ * Busca o título do anime DINAMICAMENTE (sem lista fixa)
+ */
 async function getAnimeTitle(id) {
   const parts = id.split(":");
   const mainId = parts[0];
 
-  if (FALLBACK_MAP[mainId]) return FALLBACK_MAP[mainId];
-
+  // 1. Busca no Kitsu se for ID de anime
   if (id.startsWith("kitsu")) {
     try {
       const res = await client.get(`https://kitsu.io/api/edge/anime/${parts[1]}`);
       const attr = res.data && res.data.data && res.data.data.attributes;
-      if (attr) return attr.canonicalTitle || attr.titles.en || attr.titles.en_jp;
+      if (attr) {
+        return attr.canonicalTitle || attr.titles.en || attr.titles.en_jp;
+      }
     } catch (e) {}
   }
 
+  // 2. Busca no Cinemeta ou Fallback Kitsu se for ID do IMDb (ttXXXXX)
   if (mainId.startsWith("tt")) {
     try {
       const res = await client.get(`https://v3-cinemeta.strem.fun/meta/series/${mainId}.json`);
-      if (res.data && res.data.meta && res.data.meta.name) return res.data.meta.name;
+      if (res.data && res.data.meta && res.data.meta.name) {
+        return res.data.meta.name;
+      }
     } catch (e) {
       try {
         const kitsuRes = await client.get(`https://kitsu.io/api/edge/anime?filter[text]=${mainId}`);
         const attr = kitsuRes.data && kitsuRes.data.data && kitsuRes.data.data[0] && kitsuRes.data.data[0].attributes;
-        if (attr) return attr.canonicalTitle || attr.titles.en;
+        if (attr) {
+          return attr.canonicalTitle || attr.titles.en;
+        }
       } catch (err) {}
     }
   }
@@ -100,7 +96,7 @@ async function scrapeAnimesOnline(title, episode) {
         $ep("iframe, video source, embed").each((_, el) => {
           let src = "";
           const attrs = ["src", "data-src", "data-lazy-src"];
-          
+
           for (const attr of attrs) {
             const val = $ep(el).attr(attr);
             if (val) {
@@ -126,6 +122,7 @@ async function scrapeAnimesOnline(title, episode) {
 async function fetchAnimeStreams(id) {
   const parts = id.split(":");
   const episode = parts.length > 2 ? parts[2] : (parts[1] || "1");
+
   const title = await getAnimeTitle(id);
   if (!title) return [];
 
@@ -134,9 +131,9 @@ async function fetchAnimeStreams(id) {
 
 const manifest = {
   id: "br.meuanime.addon",
-  version: "1.0.2",
+  version: "1.0.3",
   name: "Animes BR",
-  description: "Addon de animes em PT-BR para Stremio.",
+  description: "Addon de animes PT-BR.",
   resources: ["stream"],
   types: ["anime", "series", "movie"],
   idPrefixes: ["tt", "kitsu"],
