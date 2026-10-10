@@ -16,10 +16,10 @@ function log(stage, details = {}) {
   }));
 }
 
-function validHttpUrl(value) {
+function isHttpUrl(value) {
   try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:";
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
   } catch {
     return false;
   }
@@ -29,7 +29,16 @@ async function searchAllProviders(query) {
   const apiUrl = process.env.AUTHORIZED_PROVIDER_API_URL;
 
   if (!apiUrl) {
-    log("provider_not_configured");
+    log("provider_not_configured", {
+      title: query.title,
+      episode: query.episode
+    });
+
+    return [];
+  }
+
+  if (!isHttpUrl(apiUrl)) {
+    log("provider_invalid_api_url");
     return [];
   }
 
@@ -49,7 +58,11 @@ async function searchAllProviders(query) {
     const unique = new Map();
 
     for (const item of items) {
-      if (!item || !validHttpUrl(item.url)) {
+      if (
+        !item ||
+        typeof item.url !== "string" ||
+        !isHttpUrl(item.url)
+      ) {
         continue;
       }
 

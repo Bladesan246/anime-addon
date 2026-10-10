@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 const manifest = {
   id: "br.meuanime.addon",
-  version: "1.3.0",
+  version: "1.3.1",
   name: "Animes BR",
   description: "Addon de animes com fontes autorizadas configuráveis.",
   resources: ["stream"],
@@ -19,8 +19,6 @@ const manifest = {
 };
 
 const builder = new addonBuilder(manifest);
-
-const addonInterface = builder.getInterface();
 
 const http = axios.create({
   timeout: 10000,
@@ -38,7 +36,7 @@ function log(stage, details = {}) {
 }
 
 function parseId(id) {
-  if (typeof id !== "string") {
+  if (typeof id !== "string" || !id.trim()) {
     return { error: "ID ausente" };
   }
 
@@ -135,7 +133,7 @@ async function getMetadata(parsed, type) {
       attributes.titles?.en_jp;
 
     if (!title) {
-      throw new Error("Kitsu não retornou um título");
+      throw new Error("O Kitsu não retornou um título");
     }
 
     return { title };
@@ -158,6 +156,11 @@ async function getMetadata(parsed, type) {
 
 builder.defineStreamHandler(async ({ type, id }) => {
   log("request", { type, id });
+
+  if (!manifest.types.includes(type)) {
+    log("unsupported_type", { type, id });
+    return { streams: [] };
+  }
 
   const parsed = parseId(id);
 
@@ -208,6 +211,9 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
   return { streams };
 });
+
+// IMPORTANTE: registrar o handler antes de getInterface().
+const addonInterface = builder.getInterface();
 
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
