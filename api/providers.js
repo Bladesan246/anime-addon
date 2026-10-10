@@ -43,9 +43,8 @@ function detectLanguage(name) {
   }
   if (n.includes("legendado")) return "🇧🇷 Legendado";
   if (n.includes("dublado")) return "🇧🇷 Dublado";
-  if (n.includes("dual audio") || n.includes("dual-audio") || n.includes("multi-audio")) return "🌐 Dual Audio";
-  if (n.includes("eng sub") || n.includes("english")) return "🇺🇸 Eng";
-  return "🌐 Multi";
+  if (n.includes("dual audio") || n.includes("dual-audio") || n.includes("multi-audio")) return "🌐 Dual";
+  return null;
 }
 
 function detectQuality(name) {
@@ -53,94 +52,113 @@ function detectQuality(name) {
   if (n.includes("2160p") || n.includes("4k")) return "4K";
   if (n.includes("1080p") || n.includes("1080")) return "1080p";
   if (n.includes("720p") || n.includes("720")) return "720p";
-  if (n.includes("480p") || n.includes("480")) return "480p";
+  if (n.includes("480p")) return "480p";
   return "HD";
 }
 
-function isLikelySingleEpisode(name, episode) {
+function matchesEpisode(name, episode) {
   const n = name.toLowerCase();
   const ep = String(episode);
-  const epPad = ep.padStart(2, "0");
-  const epPad3 = ep.padStart(3, "0");
+  const ep2 = ep.padStart(2, "0");
+  const ep3 = ep.padStart(3, "0");
 
-  // Batches grandes
-  if (
+  // Padrões comuns de episódio
+  const patterns = [
+    new RegExp(`\\b${ep2}\\b`),
+    new RegExp(`\\b${ep3}\\b`),
+    new RegExp(`\\be${ep2}\\b`),
+    new RegExp(`\\bep\\.?\\s*${ep2}\\b`),
+    new RegExp(`\\bepisode\\s*${ep}\\b`),
+    new RegExp(`\\bepisodio\\s*${ep}\\b`),
+    new RegExp(`\\bepisódio\\s*${ep}\\b`),
+    new RegExp(`-\\s*${ep2}\\b`),
+    new RegExp(`-\\s*${ep3}\\b`),
+    new RegExp(`\\s${ep2}\\s`),
+    new RegExp(`\\s${ep3}\\s`)
+  ];
+
+  return patterns.some((p) => p.test(n));
+}
+
+function isBatchOrMovie(name) {
+  const n = name.toLowerCase();
+  return (
     n.includes("complete") ||
     n.includes("batch") ||
     n.includes("completo") ||
     n.includes("season") ||
     n.includes("s01-") ||
-    n.includes("01-") ||
-    n.match(/\d{2,3}\s*~\s*\d{2,3}/) ||
-    n.match(/\d{2,3}-\d{2,3}/)
-  ) {
-    return false;
-  }
-
-  // Parece episódio único
-  if (
-    n.includes(` - ${ep} `) ||
-    n.includes(` - ${epPad}`) ||
-    n.includes(` - ${epPad3}`) ||
-    n.includes(`e${epPad}`) ||
-    n.includes(`ep${epPad}`) ||
-    n.includes(`episode ${ep}`) ||
-    n.includes(`episodio ${ep}`) ||
-    n.match(new RegExp(`\\b${epPad}\\b`)) ||
-    n.match(new RegExp(`\\b${epPad3}\\b`))
-  ) {
-    return true;
-  }
-
-  return false;
+    n.includes("s1-") ||
+    n.includes("movie") ||
+    n.includes("filme") ||
+    n.includes("ova") ||
+    n.includes("special") ||
+    n.includes("especial") ||
+    n.match(/\d{2,3}\s*[~\-–]\s*\d{2,3}/) || // 01-12, 001~050 etc
+    n.match(/\d{2,3}\s+a\s+\d{2,3}/)
+  );
 }
 
 function scoreResult(name, query, seeders) {
-  const n = name.toLowerCase();
   let score = 0;
+  const n = name.toLowerCase();
 
-  // Idioma (máxima prioridade)
-  if (n.includes("pt-br") || n.includes("ptbr")) score += 200;
-  if (n.includes("legendado")) score += 150;
-  if (n.includes("dublado")) score += 160;
-  if (n.includes("dual") || n.includes("multi-audio")) score += 80;
-
-  // Episódio individual vs batch
-  if (isLikelySingleEpisode(name, query.episode)) {
-    score += 120;
+  // Episódio correto (obrigatório quase)
+  if (matchesEpisode(name, query.episode)) {
+    score += 300;
   } else {
-    score -= 40; // penaliza batches
+    score -= 200;
   }
 
-  // Qualidade
-  if (n.includes("1080p") || n.includes("1080")) score += 30;
-  if (n.includes("720p")) score += 15;
-  if (n.includes("2160p") || n.includes("4k")) score += 25;
-  if (n.includes("bd") || n.includes("bluray") || n.includes("blu-ray")) score += 20;
+  // Penaliza forte batches e filmes
+  if (isBatchOrMovie(name)) {
+    score -= 150;
+  }
 
-  // Seeders (ajuda, mas não domina)
-  score += Math.min(seeders, 100) * 0.3;
+  // Idioma
+  if (n.includes("pt-br") || n.includes("ptbr")) score += 180;
+  if (n.includes("legendado")) score += 140;
+  if (n.includes("dublado")) score += 150;
+  if (n.includes("dual") || n.includes("multi-audio")) score += 60;
+
+  // Qualidade
+  if (n.includes("1080p") || n.includes("1080")) score += 25;
+  if (n.includes("720p")) score += 12;
+  if (n.includes("2160p") || n.includes("4k")) score += 20;
+  if (n.includes("bd") || n.includes("bluray")) score += 15;
+
+  score += Math.min(seeders, 80) * 0.25;
 
   return score;
 }
 
-function buildStreamName(name, seeders) {
+function buildDisplayName(name, seeders) {
   const quality = detectQuality(name);
   const lang = detectLanguage(name);
-  return `${quality} | ${lang} | 🌱 ${seeders}`;
+  const parts = [quality];
+  if (lang) parts.push(lang);
+  parts.push(`🌱 ${seeders}`);
+  return parts.join(" | ");
 }
 
-function buildStreamTitle(name) {
-  // Limpa um pouco o nome para ficar legível
+function buildCleanTitle(name, episode) {
+  // Tenta extrair um nome mais limpo
   let clean = name
-    .replace(/\[.*?\]/g, (match) => match) // mantém os grupos
+    .replace(/\[.*?\]/g, "")
+    .replace(/\(.*?\)/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
-  if (clean.length > 95) {
-    clean = clean.slice(0, 92) + "...";
+  // Se ficar muito genérico, usa o original resumido
+  if (clean.length < 10) {
+    clean = name.replace(/\s+/g, " ").trim();
   }
-  return clean;
+
+  if (clean.length > 70) {
+    clean = clean.slice(0, 67) + "...";
+  }
+
+  return `Ep ${String(episode).padStart(2, "0")} · ${clean}`;
 }
 
 async function searchNyaa(searchQuery) {
@@ -184,15 +202,19 @@ async function searchAllProviders(query) {
 
   const title = cleanTitle(query.title);
   const ep = query.episode;
-  const epPad = String(ep).padStart(2, "0");
+  const ep2 = String(ep).padStart(2, "0");
+  const ep3 = String(ep).padStart(3, "0");
 
+  // Buscas mais precisas primeiro
   const searches = [
-    `${title} ${epPad}`,
-    `${title} ${ep}`,
-    `${title}`,
-    `${title} PT-BR`,
-    `${title} Legendado`,
-    `${title} Dublado`
+    `${title} ${ep2}`,
+    `${title} ${ep3}`,
+    `${title} - ${ep2}`,
+    `${title} E${ep2}`,
+    `${title} Episode ${ep}`,
+    `${title} PT-BR ${ep2}`,
+    `${title} Legendado ${ep2}`,
+    `${title} Dublado ${ep2}`
   ];
 
   const results = await Promise.all(searches.map((q) => searchNyaa(q)));
@@ -210,30 +232,31 @@ async function searchAllProviders(query) {
     }
   }
 
-  // Pontua e ordena
-  const scored = unique.map((item) => {
-    const score = scoreResult(item.rawName, query, item.seeders);
-    return { ...item, score };
-  });
+  // Pontua
+  const scored = unique.map((item) => ({
+    ...item,
+    score: scoreResult(item.rawName, query, item.seeders)
+  }));
 
-  scored.sort((a, b) => b.score - a.score);
+  // Só mantém resultados com score razoável (que parecem ser o episódio certo)
+  const filtered = scored.filter((item) => item.score > 100);
 
-  // Monta o formato final limpo
-  const final = scored.slice(0, 25).map((item) => {
-    return {
-      name: buildStreamName(item.rawName, item.seeders),
-      title: `${buildStreamTitle(item.rawName)} | ${item.size}`,
-      infoHash: item.infoHash,
-      url: item.url,
-      behaviorHints: {
-        bingeGroup: `nyaa-${cleanTitle(query.title)}`
-      }
-    };
-  });
+  filtered.sort((a, b) => b.score - a.score);
+
+  const final = filtered.slice(0, 20).map((item) => ({
+    name: buildDisplayName(item.rawName, item.seeders),
+    title: `${buildCleanTitle(item.rawName, query.episode)} | ${item.size}`,
+    infoHash: item.infoHash,
+    url: item.url,
+    behaviorHints: {
+      bingeGroup: `nyaa-${cleanTitle(query.title)}-ep${query.episode}`
+    }
+  }));
 
   log("search_complete", {
     total: all.length,
     unique: unique.length,
+    filtered: filtered.length,
     returned: final.length
   });
 
