@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const http = axios.create({
-  timeout: 4000,
+  timeout: 5000,
   headers: {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -26,39 +26,49 @@ function sanitizeTitle(str) {
 
 function parseId(id) {
   if (typeof id !== "string" || !id.trim()) return { error: "ID ausente" };
-  const parts = id.split(":");
+  const decodedId = decodeURIComponent(id);
+  const parts = decodedId.split(":");
 
   if (/^kitsu$/i.test(parts[0])) {
-    if (parts.length === 2) return { source: "kitsu", animeId: parts[1], season: 1, episode: null };
-    if (parts.length === 4) {
-      return { source: "kitsu", animeId: parts[1], season: Number(parts[2]), episode: Number(parts[3]) };
+    if (parts.length === 2) return { source: "kitsu", animeId: parts[1], season: 1, episode: 1 };
+    if (parts.length >= 3) {
+      const ep = Number(parts[parts.length - 1]) || 1;
+      return { source: "kitsu", animeId: parts[1], season: 1, episode: ep };
     }
   }
 
   if (/^tt\d+$/i.test(parts[0])) {
-    if (parts.length === 1) return { source: "imdb", animeId: parts[0], season: 1, episode: null };
-    if (parts.length === 3) return { source: "imdb", animeId: parts[0], season: Number(parts[1]), episode: Number(parts[2]) };
+    if (parts.length === 1) return { source: "imdb", animeId: parts[0], season: 1, episode: 1 };
+    if (parts.length >= 3) {
+      const season = Number(parts[1]) || 1;
+      const episode = Number(parts[2]) || 1;
+      return { source: "imdb", animeId: parts[0], season, episode };
+    }
   }
 
-  return { error: "Formato de ID não suportado" };
+  return { source: "unknown", animeId: parts[0], season: 1, episode: 1 };
 }
 
 async function getMetadata(parsed, type) {
   if (parsed.source === "kitsu") {
-    const res = await http.get(`https://kitsu.io/api/edge/anime/${encodeURIComponent(parsed.animeId)}`);
-    const attr = res.data?.data?.attributes;
-    if (!attr) throw new Error("Anime não encontrado no Kitsu");
-    return { title: attr.canonicalTitle || attr.titles?.en || attr.titles?.en_jp };
+    try {
+      const res = await http.get(`https://kitsu.io/api/edge/anime/${encodeURIComponent(parsed.animeId)}`);
+      const attr = res.data?.data?.attributes;
+      if (attr) return { title: attr.canonicalTitle || attr.titles?.en || attr.titles?.en_jp };
+    } catch (e) {}
   }
 
   const metaType = type === "movie" ? "movie" : "series";
-  const res = await http.get(`https://v3-cinemeta.strem.fun/meta/${metaType}/${encodeURIComponent(parsed.animeId)}.json`);
-  const meta = res.data?.meta;
-  if (!meta?.name) throw new Error("Título não encontrado no Cinemeta");
-  return { title: meta.name };
+  try {
+    const res = await http.get(`https://v3-cinemeta.strem.fun/meta/${metaType}/${encodeURIComponent(parsed.animeId)}.json`);
+    const meta = res.data?.meta;
+    if (meta?.name) return { title: meta.name };
+  } catch (e) {}
+
+  return { title: null };
 }
 
-// 1. AnimesOnlineCC
+// Scraper 1: AnimesOnlineCC
 async function scrapeAnimesOnlineCC(title, episode) {
   const streams = [];
   try {
@@ -78,14 +88,14 @@ async function scrapeAnimesOnlineCC(title, episode) {
     for (const match of iframeMatches) {
       const src = match[1];
       if (src && !src.includes("facebook") && !src.includes("disqus")) {
-        streams.push({ name: "AnimesOnlineCC", title: `AnimesOnlineCC — Ep ${episode}`, url: src });
+        streams.push({ name: "Animes BR", title: `🌐 AnimesOnlineCC — Ep ${episode}`, url: src });
       }
     }
   } catch (e) {}
   return streams;
 }
 
-// 2. AnimesDigital
+// Scraper 2: AnimesDigital
 async function scrapeAnimesDigital(title, episode) {
   const streams = [];
   try {
@@ -105,14 +115,14 @@ async function scrapeAnimesDigital(title, episode) {
     for (const match of iframeMatches) {
       const src = match[1];
       if (src && !src.includes("disqus")) {
-        streams.push({ name: "AnimesDigital", title: `AnimesDigital — Ep ${episode}`, url: src });
+        streams.push({ name: "Animes BR", title: `🌐 AnimesDigital — Ep ${episode}`, url: src });
       }
     }
   } catch (e) {}
   return streams;
 }
 
-// 3. Goyabu
+// Scraper 3: Goyabu
 async function scrapeGoyabu(title, episode) {
   const streams = [];
   try {
@@ -130,13 +140,13 @@ async function scrapeGoyabu(title, episode) {
     const iframeMatches = epHtml.matchAll(/src="(https?:\/\/[^"]+)"/gi);
     for (const match of iframeMatches) {
       const src = match[1];
-      if (src) streams.push({ name: "Goyabu", title: `Goyabu — Ep ${episode}`, url: src });
+      if (src) streams.push({ name: "Animes BR", title: `🌐 Goyabu — Ep ${episode}`, url: src });
     }
   } catch (e) {}
   return streams;
 }
 
-// 4. AnimesOrion
+// Scraper 4: AnimesOrion
 async function scrapeAnimesOrion(title, episode) {
   const streams = [];
   try {
@@ -154,13 +164,15 @@ async function scrapeAnimesOrion(title, episode) {
     const iframeMatches = epHtml.matchAll(/src="(https?:\/\/[^"]+)"/gi);
     for (const match of iframeMatches) {
       const src = match[1];
-      if (src) streams.push({ name: "AnimesOrion", title: `AnimesOrion — Ep ${episode}`, url: src });
+      if (src) streams.push({ name: "Animes BR", title: `🌐 AnimesOrion — Ep ${episode}`, url: src });
     }
   } catch (e) {}
   return streams;
 }
 
 async function searchAllProviders(query) {
+  if (!query.title) return [];
+
   const results = await Promise.allSettled([
     scrapeAnimesOnlineCC(query.title, query.episode),
     scrapeAnimesDigital(query.title, query.episode),
@@ -184,9 +196,9 @@ async function searchAllProviders(query) {
 
 const manifest = {
   id: "br.meuanime.addon",
-  version: "1.3.2",
+  version: "1.3.3",
   name: "Animes BR",
-  description: "Addon de animes PT-BR para Stremio.",
+  description: "Addon de animes em Português (PT-BR).",
   resources: ["stream"],
   types: ["anime", "series", "movie"],
   idPrefixes: ["tt", "kitsu"],
@@ -196,22 +208,28 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 
 builder.defineStreamHandler(async ({ type, id }) => {
-  if (!manifest.types.includes(type)) return { streams: [] };
   const parsed = parseId(id);
-  if (parsed.error || parsed.episode === null) return { streams: [] };
+  const metadata = await getMetadata(parsed, type);
 
-  let metadata;
-  try {
-    metadata = await getMetadata(parsed, type);
-  } catch (e) {
-    return { streams: [] };
+  let streams = [];
+  if (metadata.title) {
+    streams = await searchAllProviders({
+      title: metadata.title,
+      season: parsed.season,
+      episode: parsed.episode
+    });
   }
 
-  const streams = await searchAllProviders({
-    title: metadata.title,
-    season: parsed.season,
-    episode: parsed.episode
-  });
+  // Se nada for encontrado, retorna mensagem legível no Stremio
+  if (!streams || streams.length === 0) {
+    streams = [
+      {
+        name: "Animes BR",
+        title: "⚠️ Nenhum stream encontrado para este episódio",
+        url: "https://vjs.zencdn.net/v/oceans.mp4"
+      }
+    ];
+  }
 
   return { streams };
 });
@@ -226,13 +244,20 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/", (req, res) => res.redirect("/manifest.json"));
-app.get("/manifest.json", (req, res) => res.json(addonInterface.manifest));
-app.get("/health", (req, res) => res.json({ status: "ok", version: manifest.version }));
+app.get(["/", "/manifest.json"], (req, res) => {
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.json(addonInterface.manifest);
+});
+
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", version: manifest.version });
+});
 
 app.get("/stream/:type/:id.json", async (req, res) => {
   try {
-    const result = await addonInterface.get("stream", req.params.type, req.params.id);
+    const { type, id } = req.params;
+    const result = await addonInterface.get("stream", type, id.replace(".json", ""));
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.json(result);
   } catch (error) {
     res.status(500).json({ streams: [] });
