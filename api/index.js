@@ -5,7 +5,7 @@ const manifest = {
   id: "br.meuanime.addon",
   version: "1.0.2",
   name: "Animes BR",
-  description: "Addon focado em animes dublados e legendados em PT-BR.",
+  description: "Addon de animes legendados e dublados em PT-BR.",
   resources: ["stream"],
   types: ["anime", "series"],
   idPrefixes: ["tt", "kitsu"],
@@ -36,32 +36,43 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
 const addonInterface = builder.getInterface();
 
-module.exports = (req, res) => {
-  // Permite conexões CORS do Stremio
+module.exports = async (req, res) => {
+  // Libera acesso CORS para o aplicativo do Stremio
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
 
-  if (req.url === "/" || req.url === "/manifest.json") {
-    res.setHeader("Content-Type", "application/json");
+  if (req.method === "OPTIONS") {
+    res.statusCode = 200;
+    return res.end();
+  }
+
+  const url = req.url.toLowerCase();
+
+  // Tratamento da rota do Manifesto
+  if (url === "/" || url === "/manifest.json" || url.endsWith("/manifest.json")) {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
     return res.end(JSON.stringify(addonInterface.manifest));
   }
 
-  if (req.url.startsWith("/stream/")) {
+  // Tratamento da rota de Streams do Stremio
+  if (url.includes("/stream/")) {
     const parts = req.url.split("/");
     const type = parts[2];
-    const id = parts[3].replace(".json", "");
+    const id = parts[3] ? parts[3].replace(".json", "") : "";
 
-    return addonInterface.get("stream", type, id)
-      .then((resp) => {
-        res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify(resp));
-      })
-      .catch((err) => {
-        res.statusCode = 500;
-        res.end(JSON.stringify({ error: err.message }));
-      });
+    try {
+      const resp = await addonInterface.get("stream", type, id);
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      return res.end(JSON.stringify(resp));
+    } catch (err) {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      return res.end(JSON.stringify({ error: err.message }));
+    }
   }
 
   res.statusCode = 404;
-  res.end("Not Found");
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.end(JSON.stringify({ error: "Not Found" }));
 };
