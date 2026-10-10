@@ -300,7 +300,7 @@ async function searchAllProviders(titles, episode) {
 
 const manifest = {
   id: "br.meuanime.addon",
-  version: "1.3.5",
+  version: "1.3.6",
   name: "Animes BR",
   description: "Addon de animes em Português (PT-BR).",
   resources: ["stream"],
